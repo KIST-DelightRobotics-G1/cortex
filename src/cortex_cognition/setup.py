@@ -26,6 +26,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'llm_node = cortex_cognition.llm_node:main',
+            'mock_module_node = cortex_cognition.mock_module_node:main',
             'orchestrator_node = cortex_cognition.orchestrator_node:main',
         ],
     },
