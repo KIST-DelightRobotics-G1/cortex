@@ -87,7 +87,9 @@ jobs:
         shell: bash
         # Non-ROS deps (json5 for the scenario loader, ...). rosdep does not
         # cover these; the nodes import them at runtime/test time.
-        run: pip3 install -r requirements.txt
+        # pytest>=7: the LLM SDKs pull anyio, whose pytest plugin imports
+        # _pytest.scope, which the apt pytest (6.2, jammy) does not have.
+        run: pip3 install -r requirements.txt "pytest>=7,<9"
 
       - name: rosdep install
         shell: bash
