@@ -40,8 +40,6 @@ orchestrator_node:
     # Override to point at a source dir during development.
     transcript_topic: /cortex/stt/transcript
     status_topic: /cortex/task_status
-    verdict_topic: /cortex/critic/verdict
-    active_subtask_topic: /cortex/active_subtask
     say_topic: /cortex/tts/say
     stop_topic: /cortex/tts/stop        # must match tts_node.barge_in_topic
     tick_rate_hz: 10.0
@@ -101,13 +99,6 @@ detector_node:
     # target (actions.yaml vocabulary key) -> YOLO class names ('|' separates alternatives)
     target_keys:    [fridge_door,  fridge,       cucumber, user]
     target_classes: [refrigerator, refrigerator, cucumber, person]
-
-vlm_node:
-  ros__parameters:
-    image_topic: /bridge/sensors/camera/color
-    active_subtask_topic: /cortex/active_subtask
-    verdict_topic: /cortex/critic/verdict
-    period_sec: 1.0
 
 gui_bridge_node:
   ros__parameters:

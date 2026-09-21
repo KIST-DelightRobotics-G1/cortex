@@ -10,7 +10,7 @@
 //
 // on_fail이 없는 이유: always는 첫 폴링에서 통과하므로 timeout 분기에 도달할 수
 // 없다 — on_fail을 달아도 영영 안 불리는 죽은 설정이 된다. 규칙: **실패가 도달
-// 가능한 sub-task에는 전부 on_fail을 단다**(delay/voice_keyword/composite/vlm).
+// 가능한 sub-task에는 전부 on_fail을 단다**(delay/voice_keyword/composite).
 {
   name: "greet",
   triggers: ["안녕"],

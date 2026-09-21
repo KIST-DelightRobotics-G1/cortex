@@ -133,7 +133,7 @@ jobs:
           # unknown criterion at load; catching it here names the file in CI
           # instead of at demo time.
           LABELS = {'speak', 'navigation', 'vla'}
-          CRITERIA = {'vlm', 'always', 'delay', 'voice_keyword', 'composite'}
+          CRITERIA = {'always', 'delay', 'voice_keyword', 'composite'}
           SCENARIO_KEYS = {'name', 'triggers', 'sub_tasks'}
           SUBTASK_KEYS = {'name', 'on_create', 'on_start', 'on_success', 'on_fail', 'success'}
           bad = False
