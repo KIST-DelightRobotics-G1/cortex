@@ -1,0 +1,138 @@
+# Subtask vocabulary — the single source for the LLM prompt, the line validator,
+# the executor's routing (exec), the VLA instruction template and the
+# detector precheck. Measured in llm-router-test/plan (3rd round, 2026-09-18):
+# gemini-3.6-flash 98.6 % schema-valid, first subtask p95 1.6 s.
+#
+# Editing rules: an action reaches the LLM only when enabled; a value reaches
+# the LLM only when listed under vocab. Nothing here is hard-coded elsewhere.
+
+actions:                      # KIST semantic action table. enabled → exposed to the LLM
+  move_to:  {sig: [target],            enabled: true,  exec: nav}
+  open:     {sig: [object],            enabled: true,  exec: vla}
+  close:    {sig: [object],            enabled: true,  exec: vla}
+  pick:     {sig: [object],            enabled: true,  exec: vla}
+  place:    {sig: [object, target],    enabled: true,  exec: vla}
+  handover: {sig: [object, person],    enabled: true,  exec: vla}
+  take_out: {sig: [object, container], enabled: false, exec: vla}
+  put_in:   {sig: [object, container], enabled: false, exec: vla}
+  receive:  {sig: [object, person],    enabled: false, exec: vla}
+  insert:   {sig: [object, target],    enabled: false, exec: vla}
+  remove:   {sig: [object, target],    enabled: false, exec: vla}
+  turn_on:  {sig: [device],            enabled: false, exec: vla}
+  turn_off: {sig: [device],            enabled: false, exec: vla}
+  adjust:   {sig: [target, state],     enabled: false, exec: vla}
+  pour:     {sig: [source, target],    enabled: false, exec: vla}
+  fill:     {sig: [container, substance], enabled: false, exec: vla}
+  empty:    {sig: [container],         enabled: false, exec: vla}
+  wipe:     {sig: [object],            enabled: false, exec: vla}
+  lock:     {sig: [object],            enabled: false, exec: vla}
+  unlock:   {sig: [object],            enabled: false, exec: vla}
+
+vocab:                        # allowed values per arg type. A value is the nav goal key / VLA vocabulary key
+  target:    [fridge, table, counter, user, home]
+  object:    [fridge_door, cucumber, tray]
+  container: [fridge]
+  person:    [user]
+
+object_locations:             # where an object normally is → decides the move_to before manipulation
+  cucumber:    {at: fridge,  inside: fridge_door}   # inside the fridge → door must be opened first
+  fridge_door: {at: fridge}
+  tray:        {at: counter}
+
+korean:                       # prompt glosses; '/' separates aliases the say checker accepts
+  fridge: 냉장고
+  fridge_door: 냉장고 문
+  cucumber: 오이
+  tray: 트레이
+  table: 테이블/식탁
+  counter: 조리대
+  user: 사용자/나/저
+  home: 홈/원위치/제자리
+
+english:                      # VLA instruction words
+  fridge: the refrigerator
+  fridge_door: the refrigerator door
+  cucumber: the cucumber
+  tray: the tray
+  table: the table
+  counter: the counter
+  user: the person
+  home: the home position
+
+action_ko: {move_to: 이동, open: 열기, close: 닫기, pick: 집기, place: 놓기, handover: 건네기}
+
+# VLA instruction templates. {0}, {1} = english[] of args in signature order.
+# nav actions have no template — SubtaskCmd.instruction is "" for them.
+instruction:
+  open:     "Open {0}."
+  close:    "Close {0}."
+  pick:     "Pick up {0}."
+  place:    "Place {0} on {1}."
+  handover: "Hand {0} to {1}."
+
+# Detector precheck before a step is dispatched: which signature slot names the
+# thing that must be visible. Missing → no check. A "not visible" answer fails
+# the step (nav: none; the nav module owns arrival).
+precheck:
+  open:     object
+  close:    object
+  pick:     object
+  handover: person
+
+# Fixed phrases the orchestrator speaks on its own events (the LLM never sees these).
+# {ko} = Korean name, {i}/{eul}/{eun} = particle resolved on the final consonant.
+phrases:
+  not_visible:   "{ko}{i} 보이지 않습니다."
+  step_failed:   "{ko}{eul} 하지 못했습니다."
+  not_accepted:  "{ko}{eul} 시작하지 못했습니다."
+  module_lost:   "{ko} 모듈이 응답하지 않습니다."
+  plan_error:    "죄송합니다. 잘 이해하지 못했습니다."
+  stopped:       "멈춥니다."
+  done:          "다 했습니다."
+
+# Standard decompositions (few-shot). Reviewed sequences, copied verbatim into the prompt.
+examples:
+  - utterance: "냉장고에서 오이 하나 가져다줘"
+    lines:
+      - {i: 0, a: move_to,  args: [fridge],         say: "냉장고로 갑니다."}
+      - {i: 1, a: open,     args: [fridge_door],    say: "냉장고 문을 엽니다."}
+      - {i: 2, a: pick,     args: [cucumber],       say: "오이를 집습니다."}
+      - {i: 3, a: close,    args: [fridge_door],    say: "냉장고 문을 닫습니다."}
+      - {i: 4, a: move_to,  args: [user],           say: "사용자에게 갑니다."}
+      - {i: 5, a: handover, args: [cucumber, user], say: "오이를 건네드립니다."}
+  - utterance: "오이 테이블에 놓아 줘"
+    lines:
+      - {i: 0, a: move_to, args: [fridge],          say: "냉장고로 갑니다."}
+      - {i: 1, a: open,    args: [fridge_door],     say: "냉장고 문을 엽니다."}
+      - {i: 2, a: pick,    args: [cucumber],        say: "오이를 집습니다."}
+      - {i: 3, a: close,   args: [fridge_door],     say: "냉장고 문을 닫습니다."}
+      - {i: 4, a: move_to, args: [table],           say: "테이블로 갑니다."}
+      - {i: 5, a: place,   args: [cucumber, table], say: "오이를 테이블에 놓습니다."}
+  - utterance: "트레이 가져다줘"
+    lines:
+      - {i: 0, a: move_to,  args: [counter],     say: "조리대로 갑니다."}
+      - {i: 1, a: pick,     args: [tray],        say: "트레이를 집습니다."}
+      - {i: 2, a: move_to,  args: [user],        say: "사용자에게 갑니다."}
+      - {i: 3, a: handover, args: [tray, user],  say: "트레이를 건네드립니다."}
+  - utterance: "조리대로 가"
+    lines:
+      - {i: 0, a: move_to, args: [counter], say: "조리대로 갑니다."}
+  - utterance: "사과 가져와"
+    reply: {reply: none, say: "사과는 아직 못 합니다. 지금은 오이만 다룰 수 있어요."}
+  - utterance: "안녕"
+    reply: {reply: chat, say: "안녕하세요. 무엇을 도와드릴까요?"}
+
+limits:
+  max_subtasks: 8
+
+# say quality check: the say must contain one of these stems for its action
+say_stems:
+  move_to:  [갑니다, 이동, 갈게, 향합니다]
+  open:     [엽니다, 열]
+  close:    [닫]
+  pick:     [집, 듭니다, 꺼냅니다]
+  place:    [놓, 내려, 넣]
+  handover: [건네, 드립니다, 전달]
+
+# say phrases that promise instead of announce (rejected as warnings)
+promise_patterns: [드릴게요, 드리겠습니다, 가져올게요, 가져오겠습니다, 갈게요, 가겠습니다, 할게요, 하겠습니다]

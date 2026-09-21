@@ -11,8 +11,16 @@ A hook step is {label: payload}; the label picks a Connector (speak / navigation
 the tick loop — heavy inference must not block it). Scenarios are JSON5 under
 config/scenarios/.
 
-OPEN-LOOP: connectors fire commands (ActionCmd for speak, stubs for nav/vla) and
-never wait for confirmation. Preemption is immediate — a new trigger cancels the
+planner_mode (parameter):
+    static  the engine above — transcripts match scenario triggers.
+    llm     every final transcript becomes a PlanRequest to llm_node; the streamed
+            PlanStep lines are executed by cortex_cognition.executor against the
+            nav / VLA modules over SubtaskCmd / SubtaskState (spec v0.1), with a
+            detector precheck (CheckTarget) before manipulation steps. The static
+            engine is bypassed entirely in this mode.
+
+OPEN-LOOP (static mode): connectors fire commands (ActionCmd for speak, stubs for
+nav/vla) and never wait for confirmation. Preemption is immediate — a new trigger cancels the
 current commands (fire-and-forget) and starts the new scenario right away, with no
 CANCELING wait or status monitoring. The old and new motions may briefly overlap;
 that trade-off is accepted for simplicity.
@@ -32,7 +40,14 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
-from cortex_msgs.msg import ActionCmd, Subtask, TaskStatus, Verdict
+from cortex_msgs.msg import (ActionCmd, PlanRequest, PlanStep, Subtask, SubtaskCmd,
+                             SubtaskState, TaskStatus, TraceEvent, Verdict)
+from cortex_msgs.srv import CheckTarget
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+
+from . import executor as ex
+from . import planner
 
 
 # ===========================================================================
@@ -253,10 +268,34 @@ class OrchestratorNode(Node):
         self.declare_parameter('say_topic', '/cortex/tts/say')
         self.declare_parameter('stop_topic', '/cortex/tts/stop')   # tts barge-in
         self.declare_parameter('tick_rate_hz', 10.0)
+        # --- llm mode ---
+        self.declare_parameter('planner_mode', 'static')          # static | llm
+        self.declare_parameter('actions_path', os.path.join(
+            get_package_share_directory('cortex_cognition'), 'config', 'actions.yaml'))
+        self.declare_parameter('llm_request_topic', '/cortex/llm/request')
+        self.declare_parameter('llm_step_topic', '/cortex/llm/step')
+        self.declare_parameter('nav_cmd_topic', '/cortex/nav/cmd')
+        self.declare_parameter('nav_state_topic', '/cortex/nav/state')
+        self.declare_parameter('vla_cmd_topic', '/cortex/vla/cmd')
+        self.declare_parameter('vla_state_topic', '/cortex/vla/state')
+        self.declare_parameter('trace_topic', '/cortex/trace')
+        self.declare_parameter('detector_service', '/cortex/detector/check')
+        self.declare_parameter('detector_call_timeout_s', 0.3)
+        self.declare_parameter('stop_keywords', ['그만', '멈춰', '정지', '스톱'])
+        self.declare_parameter('accept_timeout_s', 0.5)
+        self.declare_parameter('stale_s', 1.0)
+        self.declare_parameter('step_timeout_nav_s', 60.0)
+        self.declare_parameter('step_timeout_vla_s', 30.0)
+        self.declare_parameter('step_wait_s', 5.0)
+        self.declare_parameter('safe_stop_nav_s', 3.0)
+        self.declare_parameter('safe_stop_vla_s', 10.0)
+        self.declare_parameter('plan_timeout_s', 20.0)
+        self.declare_parameter('detector_fail_open', True)
 
         g = self.get_parameter
         scenario_dir = g('scenario_dir').value
         tick_hz = float(g('tick_rate_hz').value)
+        self.mode = g('planner_mode').value
 
         # --- connectors (label -> connector) ------------------------------
         self.connectors = {
@@ -296,11 +335,142 @@ class OrchestratorNode(Node):
             Verdict, g('verdict_topic').value, self._on_verdict, 10, callback_group=grp)
 
         self.create_timer(1.0 / tick_hz, self._tick, callback_group=grp)
-        self.get_logger().info(f'orchestrator_node up (tick={tick_hz}Hz)')
+
+        # --- llm mode wiring ------------------------------------------------
+        self.trace_pub = self.create_publisher(TraceEvent, g('trace_topic').value, 50)
+        self._exec = None
+        if self.mode == 'llm':
+            self._setup_llm_mode(grp)
+        self.get_logger().info(f'orchestrator_node up (mode={self.mode}, tick={tick_hz}Hz)')
+
+    # ======================================================================
+    # llm mode
+    # ======================================================================
+    def _setup_llm_mode(self, grp) -> None:
+        g = self.get_parameter
+        self.cfg = planner.load_config(g('actions_path').value)
+        self._seq = 0
+        self._epoch = int(time.time())
+        self.stop_keywords = list(g('stop_keywords').value)
+        self.plan_req_pub = self.create_publisher(PlanRequest, g('llm_request_topic').value, 10)
+        reliable = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        self.cmd_pub = {
+            'nav': self.create_publisher(SubtaskCmd, g('nav_cmd_topic').value, reliable),
+            'vla': self.create_publisher(SubtaskCmd, g('vla_cmd_topic').value, reliable),
+        }
+        self.create_subscription(PlanStep, g('llm_step_topic').value, self._on_plan_step, 50,
+                                 callback_group=grp)
+        self.create_subscription(SubtaskState, g('nav_state_topic').value,
+                                 lambda m: self._on_module_state('nav', m), reliable,
+                                 callback_group=grp)
+        self.create_subscription(SubtaskState, g('vla_state_topic').value,
+                                 lambda m: self._on_module_state('vla', m), reliable,
+                                 callback_group=grp)
+        # Detector client lives in its own reentrant group so a synchronous wait
+        # inside the (mutually exclusive) orchestration callbacks can complete.
+        self._det_grp = ReentrantCallbackGroup()
+        self.det_client = self.create_client(CheckTarget, g('detector_service').value,
+                                             callback_group=self._det_grp)
+        self._det_timeout = float(g('detector_call_timeout_s').value)
+
+        prm = ex.Params(
+            accept_timeout_s=float(g('accept_timeout_s').value),
+            stale_s=float(g('stale_s').value),
+            step_timeout_s={'nav': float(g('step_timeout_nav_s').value),
+                            'vla': float(g('step_timeout_vla_s').value)},
+            step_wait_s=float(g('step_wait_s').value),
+            safe_stop_timeout_s={'nav': float(g('safe_stop_nav_s').value),
+                                 'vla': float(g('safe_stop_vla_s').value)},
+            plan_timeout_s=float(g('plan_timeout_s').value),
+            detector_fail_open=bool(g('detector_fail_open').value),
+        )
+        ports = ex.Ports(
+            now=self._now,
+            send_cmd=self._send_cmd,
+            send_cancel=self._send_cancel,
+            check_target=self._check_target,
+            say=self._say,
+            stop_speech=lambda: self.stop_pub.publish(Bool(data=True)),
+            trace=self._trace,
+            status=self._status_llm,
+            log=lambda s: self.get_logger().info(s),
+        )
+        self._exec = ex.Executor(self.cfg, ports, prm)
+        # 100 ms absence monitor (accept / stale / step timeouts); everything else is event-driven.
+        self.create_timer(0.1, self._exec.tick, callback_group=grp)
+        self.get_logger().info(
+            f'llm mode: {len([a for a, s in self.cfg["actions"].items() if s.get("enabled")])} '
+            f'actions, detector={g("detector_service").value}')
+
+    def _new_plan_id(self) -> str:
+        self._seq += 1
+        return f'p-{self._epoch}-{self._seq:04d}'
+
+    def _on_transcript_llm(self, text: str) -> None:
+        if any(k in text for k in self.stop_keywords):
+            self._trace(ex.T_HEARD, self._exec.plan_id, -1, text, 'stop')
+            self._exec.stop('user')
+            return
+        plan_id = self._new_plan_id()
+        state = self._exec.heard(plan_id, text)
+        self.plan_req_pub.publish(PlanRequest(plan_id=plan_id, utterance=text, state=state))
+
+    def _on_plan_step(self, m: PlanStep) -> None:
+        self._exec.on_step(m.plan_id, m.kind, m.index, m.action, list(m.args), m.say,
+                           m.reply_kind, m.detail)
+
+    def _on_module_state(self, which: str, m: SubtaskState) -> None:
+        self._exec.on_state(which, m.status, m.plan_id, m.index, m.detail, m.progress)
+
+    # --- ports --------------------------------------------------------------
+    def _say(self, text: str) -> None:
+        if text:
+            self.say_pub.publish(ActionCmd(text=text))
+
+    def _send_cmd(self, which: str, step, plan_id: str) -> None:
+        msg = SubtaskCmd(plan_id=plan_id, index=step.index, action=step.action,
+                         args=list(step.args), instruction=step.instruction, cancel=False)
+        msg.header.stamp = self.get_clock().now().to_msg()
+        self.cmd_pub[which].publish(msg)
+
+    def _send_cancel(self, which: str, plan_id: str, index: int) -> None:
+        msg = SubtaskCmd(plan_id=plan_id, index=index, cancel=True)
+        msg.header.stamp = self.get_clock().now().to_msg()
+        self.cmd_pub[which].publish(msg)
+
+    def _check_target(self, target: str):
+        """Synchronous detector query -> (found, detail). A non-empty detail with
+        found=False means 'no verdict' (service missing / timeout / stale frame),
+        which the executor treats as fail-open."""
+        if not self.det_client.service_is_ready():
+            return False, 'no_detector'
+        fut = self.det_client.call_async(CheckTarget.Request(target=target))
+        deadline = time.monotonic() + self._det_timeout
+        while not fut.done() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        if not fut.done():
+            return False, 'detector_timeout'
+        r = fut.result()
+        return bool(r.found), (f'{r.label} {r.confidence:.2f}' if r.found else r.detail)
+
+    def _trace(self, kind: int, plan_id: str, index: int, title: str, body: str) -> None:
+        msg = TraceEvent(plan_id=plan_id, kind=int(kind), index=int(index), title=title, body=body)
+        msg.header.stamp = self.get_clock().now().to_msg()
+        self.trace_pub.publish(msg)
+
+    def _status_llm(self, state: int, task: str, subtask: str, idx: int, count: int,
+                    detail: str) -> None:
+        msg = TaskStatus(task_name=task, current_subtask=subtask, subtask_index=int(idx),
+                         subtask_count=int(count), state=int(state), detail=detail)
+        msg.header.stamp = self.get_clock().now().to_msg()
+        self.status_pub.publish(msg)
 
     # --- inputs -----------------------------------------------------------
     def _on_transcript(self, msg: String) -> None:
         text = msg.data
+        if self._exec is not None:                       # llm mode: no trigger matching
+            self._on_transcript_llm(text)
+            return
         # Buffer BEFORE the trigger check: a voice_keyword criterion reads this,
         # and an early return on a trigger match must not swallow the utterance.
         self._transcripts.append(text)

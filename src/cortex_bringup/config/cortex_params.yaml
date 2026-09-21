@@ -45,6 +45,62 @@ orchestrator_node:
     say_topic: /cortex/tts/say
     stop_topic: /cortex/tts/stop        # must match tts_node.barge_in_topic
     tick_rate_hz: 10.0
+    # --- planner mode: THE switch between file scenarios and LLM subtask generation.
+    #   static  transcripts match scenario triggers[] (config/scenarios/*.json5)
+    #   llm     every final transcript -> llm_node -> streamed PlanStep lines,
+    #           executed over SubtaskCmd/SubtaskState (spec v0.1). config/actions.yaml
+    #           is the vocabulary for prompt, validator, routing and precheck.
+    planner_mode: llm                   # static | llm
+    llm_request_topic: /cortex/llm/request
+    llm_step_topic: /cortex/llm/step
+    nav_cmd_topic: /cortex/nav/cmd      # nav-planner (gearsonic) — see ICD
+    nav_state_topic: /cortex/nav/state
+    vla_cmd_topic: /cortex/vla/cmd      # VLA runner
+    vla_state_topic: /cortex/vla/state
+    trace_topic: /cortex/trace          # thought flow for the display (gui_bridge_node)
+    detector_service: /cortex/detector/check
+    detector_call_timeout_s: 0.3
+    stop_keywords: ['그만', '멈춰', '정지', '스톱']
+    # Judgment parameters (Subtask_state_interface_spec v0.1, 08절)
+    accept_timeout_s: 0.5               # Cmd -> RUNNING; +1 resend
+    stale_s: 1.0                        # no state message at all -> module lost
+    step_timeout_nav_s: 60.0
+    step_timeout_vla_s: 30.0
+    step_wait_s: 5.0                    # step done but next PlanStep not here yet
+    safe_stop_nav_s: 3.0                # cancel -> IDLE
+    safe_stop_vla_s: 10.0
+    plan_timeout_s: 20.0                # PlanRequest -> first line
+    # detector unavailable (no node / timeout / stale frame) -> proceed; only a real
+    # "not visible" blocks the step. Set false to block on any missing verdict.
+    detector_fail_open: true
+
+llm_node:
+  ros__parameters:
+    request_topic: /cortex/llm/request   # must match orchestrator llm_* topics
+    step_topic: /cortex/llm/step
+    # actions_path: default = installed share/cortex_cognition/config/actions.yaml
+    backend: dummy                       # dummy | gemini | openai
+    model: gemini-3.6-flash              # gemini: GOOGLE_API_KEY; openai: OPENAI_API_KEY (env)
+    request_timeout_s: 20.0
+    dummy_line_delay_s: 0.15             # dummy backend: per-line delay to mimic streaming
+
+detector_node:
+  ros__parameters:
+    camera_topic: /bridge/sensors/camera/color/compressed
+    camera_transport: compressed         # compressed | raw
+    detections_topic: /cortex/detections
+    service: /cortex/detector/check
+    backend: always                      # always = STUB (every target found) | yolo
+    model: yolo26s.pt                    # yolo26x.pt if 26s misses; cucumber needs a fine-tuned file
+    device: ''                           # '' = auto (cuda if present)
+    rate_hz: 8.0
+    window_s: 0.6                        # CheckTarget answers by majority over this window
+    default_min_confidence: 0.4
+    infer_conf: 0.25
+    imgsz: 640
+    # target (actions.yaml vocabulary key) -> YOLO class names ('|' separates alternatives)
+    target_keys:    [fridge_door,  fridge,       cucumber, user]
+    target_classes: [refrigerator, refrigerator, cucumber, person]
 
 vlm_node:
   ros__parameters:
@@ -63,3 +119,5 @@ gui_bridge_node:
     ws_host: 0.0.0.0
     ws_port: 8081                   # GUIBackground default — must match renderer
     stream_rate_hz: 15.0
+    trace_topic: /cortex/trace      # thought-flow events -> {"type":"event"} messages
+    event_buffer: 200               # replayed to a late client (current plan only)

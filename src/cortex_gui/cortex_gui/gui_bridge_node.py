@@ -5,7 +5,14 @@ WebSocket and, per frame, expects two messages —
 
     text (JSON) : {"scenario": str, "subtask": {"name", "i", "n"} | null,
                    "state": "idle" | "active" | "success" | "failed"}
+    text (JSON) : {"type": "event", "t": float, "plan_id": str, "kind": str,
+                   "index": int, "title": str, "body": str}      (thought flow)
     binary      : the latest camera JPEG bytes
+
+Events come from /cortex/trace (TraceEvent). The bridge keeps the last
+`event_buffer` of them and REPLAYS the current plan's events to a client that
+connects late (a refreshed display recovers the whole flow). Still no decisions
+here — the bridge only renames kinds and buffers.
 
 This node is a THIN adapter: it subscribes to the orchestrator's TaskStatus (and
 optionally a camera topic), translates to that contract, and serves it. No
@@ -28,7 +35,28 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage, Image
 
-from cortex_msgs.msg import TaskStatus
+from cortex_msgs.msg import TaskStatus, TraceEvent
+
+_KIND_NAME = {
+    TraceEvent.HEARD: 'HEARD', TraceEvent.THINKING: 'THINKING',
+    TraceEvent.PLAN_LINE: 'PLAN_LINE', TraceEvent.PLAN_END: 'PLAN_END',
+    TraceEvent.REPLY: 'REPLY', TraceEvent.STEP_START: 'STEP_START',
+    TraceEvent.STEP_DONE: 'STEP_DONE', TraceEvent.STEP_FAILED: 'STEP_FAILED',
+    TraceEvent.GROUND: 'GROUND', TraceEvent.CANCEL: 'CANCEL',
+    TraceEvent.PLAN_DONE: 'PLAN_DONE', TraceEvent.NOTE: 'NOTE',
+}
+
+
+def _event_to_json(msg: TraceEvent) -> str:
+    return json.dumps({
+        'type': 'event',
+        't': msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9,
+        'plan_id': msg.plan_id,
+        'kind': _KIND_NAME.get(msg.kind, 'NOTE'),
+        'index': int(msg.index),
+        'title': msg.title,
+        'body': msg.body,
+    }, ensure_ascii=False)
 
 
 # TaskStatus.state -> the GUI's four display states. PREEMPTED maps to idle: a
@@ -72,6 +100,8 @@ class GuiBridgeNode(Node):
         self.declare_parameter('ws_host', '0.0.0.0')
         self.declare_parameter('ws_port', 8081)
         self.declare_parameter('stream_rate_hz', 15.0)
+        self.declare_parameter('trace_topic', '/cortex/trace')
+        self.declare_parameter('event_buffer', 200)
 
         g = self.get_parameter
         self._transport = str(g('camera_transport').value).lower()
@@ -83,14 +113,22 @@ class GuiBridgeNode(Node):
         self._status_json: str = _status_to_json(TaskStatus())   # seed = idle
         self._frame: bytes = b''
         self._frame_seq: int = 0                 # bumped per new frame; pump dedupes
+        # --- event ring (ROS thread appends; WS thread drains by sequence) ----
+        self._events: list = []                  # [(seq, plan_id, json)]
+        self._event_seq: int = 0
+        self._event_cap = int(g('event_buffer').value)
+        self._event_lock = threading.Lock()
 
         # --- io --------------------------------------------------------------
         self.create_subscription(
             TaskStatus, g('status_topic').value, self._on_status, 10)
+        self.create_subscription(
+            TraceEvent, g('trace_topic').value, self._on_trace, 50)
         self._subscribe_camera(g('camera_topic').value)
 
         # --- websocket server on its own asyncio loop / daemon thread --------
-        self._clients: set = set()
+        # NOT `_clients`: rclpy.Node owns that name (service clients) and iterates it.
+        self._ws_clients: set = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ready = threading.Event()
         self._thread = threading.Thread(target=self._serve, daemon=True)
@@ -103,6 +141,26 @@ class GuiBridgeNode(Node):
     # --- ROS callbacks (main thread) -------------------------------------
     def _on_status(self, msg: TaskStatus) -> None:
         self._status_json = _status_to_json(msg)
+
+    def _on_trace(self, msg: TraceEvent) -> None:
+        with self._event_lock:
+            self._event_seq += 1
+            self._events.append((self._event_seq, msg.plan_id, _event_to_json(msg)))
+            if len(self._events) > self._event_cap:
+                del self._events[: len(self._events) - self._event_cap]
+
+    def _replay_events(self) -> list:
+        """Events of the current plan (from its HEARD onwards) for a late client."""
+        with self._event_lock:
+            if not self._events:
+                return []
+            cur = self._events[-1][1]
+            start = 0
+            for i in range(len(self._events) - 1, -1, -1):
+                if self._events[i][1] != cur:
+                    start = i + 1
+                    break
+            return [e[2] for e in self._events[start:]]
 
     def _subscribe_camera(self, topic: str) -> None:
         if self._transport == 'none':
@@ -144,14 +202,20 @@ class GuiBridgeNode(Node):
             await self._pump()
 
     async def _client_handler(self, ws) -> None:
-        self._clients.add(ws)
-        self.get_logger().info(f'gui client connected ({len(self._clients)})')
+        try:
+            await ws.send(self._status_json)
+            for ev in self._replay_events():
+                await ws.send(ev)
+        except Exception:                        # noqa: BLE001 - client gone already
+            return
+        self._ws_clients.add(ws)
+        self.get_logger().info(f'gui client connected ({len(self._ws_clients)})')
         try:
             async for _ in ws:                   # renderer never sends; just await close
                 pass
         finally:
-            self._clients.discard(ws)
-            self.get_logger().info(f'gui client left ({len(self._clients)})')
+            self._ws_clients.discard(ws)
+            self.get_logger().info(f'gui client left ({len(self._ws_clients)})')
 
     async def _pump(self) -> None:
         """Broadcast latest status (on change) + latest frame (on change) to all
@@ -160,24 +224,30 @@ class GuiBridgeNode(Node):
         period = 1.0 / self._rate if self._rate > 0 else 1.0 / 15.0
         last_status = None
         last_seq = -1
+        last_ev = self._event_seq                # events before the pump starts are replay-only
         while True:
             status = self._status_json
             seq = self._frame_seq
             send_status = status != last_status
             send_frame = seq != last_seq and self._frame
-            if self._clients and (send_status or send_frame):
+            with self._event_lock:
+                new_events = [e[2] for e in self._events if e[0] > last_ev]
+                last_ev = self._event_seq
+            if self._ws_clients and (send_status or send_frame or new_events):
                 frame = self._frame
                 dead = []
-                for ws in list(self._clients):
+                for ws in list(self._ws_clients):
                     try:
                         if send_status:
                             await ws.send(status)
+                        for ev in new_events:    # events are never dropped (unlike frames)
+                            await ws.send(ev)
                         if send_frame:
                             await ws.send(frame)
                     except Exception:            # noqa: BLE001 - drop broken client
                         dead.append(ws)
                 for ws in dead:
-                    self._clients.discard(ws)
+                    self._ws_clients.discard(ws)
             last_status, last_seq = status, seq
             await asyncio.sleep(period)
 
