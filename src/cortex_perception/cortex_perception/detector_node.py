@@ -15,8 +15,12 @@ conf ≥ min_confidence in a MAJORITY of the frames inside the window. No frames
 or only stale frames → found=false with detail "no_frame" / "stale" — the
 orchestrator treats those as "no verdict" (fail-open), unlike a real "not found".
 
-Backend: ultralytics (YOLO26s by default). Imported lazily; without it the node
-still runs and answers detail="model_not_loaded" so the rest of the stack works.
+Backends (parameter `backend`):
+    always   STUB — every known target is "found" (confidence 1.0, detail "stub").
+             Default until the real detector lands; keeps the orchestrator's
+             precheck path exercised without a camera or weights.
+    yolo     ultralytics (YOLO26s by default). Imported lazily; without it the
+             node still runs and answers detail="model_not_loaded".
 
 COCO caveat: 'refrigerator' and 'person' exist in the pretrained classes;
 'cucumber' does not — that target needs a fine-tuned weight file (parameter `model`).
@@ -44,6 +48,7 @@ class DetectorNode(Node):
         self.declare_parameter('camera_transport', 'compressed')   # compressed | raw
         self.declare_parameter('detections_topic', '/cortex/detections')
         self.declare_parameter('service', '/cortex/detector/check')
+        self.declare_parameter('backend', 'always')   # always (stub) | yolo
         self.declare_parameter('model', 'yolo26s.pt')
         self.declare_parameter('device', '')          # '' = ultralytics default (cuda if available)
         self.declare_parameter('rate_hz', 8.0)
@@ -63,6 +68,7 @@ class DetectorNode(Node):
         keys, classes = list(g('target_keys').value), list(g('target_classes').value)
         self.targets = {k: set(c.split('|')) for k, c in zip(keys, classes)}
         self.model_name = str(g('model').value)
+        self.backend = str(g('backend').value)
 
         self._lock = threading.Lock()
         self._frame = None                     # latest decoded BGR frame
@@ -70,7 +76,8 @@ class DetectorNode(Node):
         self._window = collections.deque()     # (t, {label: max_conf})
         self._model = None
         self._names = {}
-        self._load_model(str(g('device').value))
+        if self.backend == 'yolo':
+            self._load_model(str(g('device').value))
 
         grp = ReentrantCallbackGroup()
         self.det_pub = self.create_publisher(DetectionArray, g('detections_topic').value, 10)
@@ -82,8 +89,8 @@ class DetectorNode(Node):
         self.create_service(CheckTarget, g('service').value, self._on_check, callback_group=grp)
         self.create_timer(1.0 / float(g('rate_hz').value), self._infer, callback_group=grp)
         self.get_logger().info(
-            f'detector_node up (model={self.model_name}, loaded={self._model is not None}, '
-            f'targets={ {k: sorted(v) for k, v in self.targets.items()} })')
+            f'detector_node up (backend={self.backend}, model={self.model_name}, '
+            f'loaded={self._model is not None}, targets={sorted(self.targets)})')
 
     # --- model ------------------------------------------------------------
     def _load_model(self, device: str) -> None:
@@ -157,12 +164,18 @@ class DetectorNode(Node):
     # --- service ----------------------------------------------------------
     def _on_check(self, req: CheckTarget.Request, res: CheckTarget.Response) -> CheckTarget.Response:
         res.found = False
-        if self._model is None:
-            res.detail = 'model_not_loaded'
-            return res
         classes = self.targets.get(req.target)
         if classes is None:
             res.detail = 'unknown_target'
+            return res
+        if self.backend == 'always':                        # stub: see module docstring
+            res.found, res.confidence, res.label = True, 1.0, sorted(classes)[0]
+            res.cx, res.cy, res.w, res.h = 0.5, 0.5, 0.0, 0.0
+            res.stamp = self.get_clock().now().to_msg()
+            res.detail = 'stub'
+            return res
+        if self._model is None:
+            res.detail = 'model_not_loaded'
             return res
         min_conf = req.min_confidence or self.min_conf
         max_age = req.max_age_s or self.window_s

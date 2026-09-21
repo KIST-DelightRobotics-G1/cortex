@@ -1,6 +1,7 @@
 """Offline llm-mode loop: no robot, no mic, no network.
 
     llm_node(dummy) -> orchestrator_node(llm) -> mock nav + mock vla -> gui_bridge
+                                   detector_node(always) answers every precheck
 
 Drive it from a terminal:
     ros2 topic pub -1 /cortex/stt/transcript std_msgs/msg/String "{data: '냉장고에서 오이 가져다줘'}"
@@ -30,6 +31,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('backend', default_value='dummy', description='dummy | gemini | openai'),
         node('cortex_cognition', 'llm_node', extra={'backend': LaunchConfiguration('backend')}),
         node('cortex_cognition', 'orchestrator_node', extra={'planner_mode': 'llm'}),
+        node('cortex_perception', 'detector_node', extra={'backend': 'always'}),
         node('cortex_cognition', 'mock_module_node', 'mock_nav',
              {'role': 'nav', 'cmd_topic': '/cortex/nav/cmd', 'state_topic': '/cortex/nav/state',
               'duration_s': 3.0}),

@@ -90,6 +90,7 @@ detector_node:
     camera_transport: compressed         # compressed | raw
     detections_topic: /cortex/detections
     service: /cortex/detector/check
+    backend: always                      # always = STUB (every target found) | yolo
     model: yolo26s.pt                    # yolo26x.pt if 26s misses; cucumber needs a fine-tuned file
     device: ''                           # '' = auto (cuda if present)
     rate_hz: 8.0
