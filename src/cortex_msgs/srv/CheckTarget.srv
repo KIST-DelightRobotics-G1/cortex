@@ -1,0 +1,19 @@
+# orchestrator_node -> detector_node. "Is <target> visible right now?"
+# Answered from the detector's rolling window of recent frames, not from a
+# fresh inference, so the call returns in a few ms and a single flickering
+# frame does not flip the answer.
+
+string  target           # vocabulary key: fridge_door | cucumber | user | ...
+                         # detector_node maps it to YOLO class names via its params
+float32 min_confidence   # 0 = detector default
+float32 max_age_s        # 0 = detector default; frames older than this are ignored
+---
+bool    found
+float32 confidence       # best confidence among matching frames (0 if not found)
+string  label            # YOLO class name that matched ("" if not found)
+float32 cx               # bbox centre, normalised 0..1 (0 if not found)
+float32 cy
+float32 w
+float32 h
+builtin_interfaces/Time stamp   # frame time of the match
+string  detail           # "" | "stale" | "no_frame" | "unknown_target" | "model_not_loaded"
