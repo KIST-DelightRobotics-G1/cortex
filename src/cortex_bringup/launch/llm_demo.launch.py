@@ -12,6 +12,8 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -24,7 +26,9 @@ def generate_launch_description() -> LaunchDescription:
                     parameters=[params] + ([extra] if extra else []))
 
     return LaunchDescription([
-        node('cortex_cognition', 'llm_node', extra={'backend': 'dummy'}),
+        # backend:=gemini needs GOOGLE_API_KEY in the environment (openai: OPENAI_API_KEY)
+        DeclareLaunchArgument('backend', default_value='dummy', description='dummy | gemini | openai'),
+        node('cortex_cognition', 'llm_node', extra={'backend': LaunchConfiguration('backend')}),
         node('cortex_cognition', 'orchestrator_node', extra={'planner_mode': 'llm'}),
         node('cortex_cognition', 'mock_module_node', 'mock_nav',
              {'role': 'nav', 'cmd_topic': '/cortex/nav/cmd', 'state_topic': '/cortex/nav/state',
