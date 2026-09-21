@@ -7,9 +7,10 @@ small lifecycle machine:
     on_create → on_start → (poll `success` each tick) → on_success | on_fail
 
 A hook step is {label: payload}; the label picks a Connector (speak / navigation
-/ vla). `success` is a polymorphic Criterion (vlm reads vlm_node's Verdict off
-the tick loop — heavy inference must not block it). Scenarios are JSON5 under
-config/scenarios/.
+/ vla). `success` is a polymorphic Criterion (always / delay / voice_keyword /
+composite). Scenarios are JSON5 under config/scenarios/. The former `vlm`
+criterion (scene judgment by vlm_node) was removed with vlm_node; scene
+grounding now happens in llm mode via detector_node before each step.
 
 planner_mode (parameter):
     static  the engine above — transcripts match scenario triggers.
@@ -40,8 +41,8 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
-from cortex_msgs.msg import (ActionCmd, PlanRequest, PlanStep, Subtask, SubtaskCmd,
-                             SubtaskState, TaskStatus, TraceEvent, Verdict)
+from cortex_msgs.msg import (ActionCmd, PlanRequest, PlanStep, SubtaskCmd, SubtaskState,
+                             TaskStatus, TraceEvent)
 from cortex_msgs.srv import CheckTarget
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy
@@ -60,7 +61,7 @@ class SubTaskDef:
     on_start: list = field(default_factory=list)
     on_success: list = field(default_factory=list)
     on_fail: list = field(default_factory=list)     # fired on timeout; owns the message
-    success: dict = field(default_factory=dict)     # raw spec (kept for the vlm check text)
+    success: dict = field(default_factory=dict)     # raw spec
     criterion: 'Criterion' = None                   # built at LOAD -> fail fast
     timeout_s: float = 30.0
 
@@ -117,18 +118,10 @@ class Criterion(ABC):
     def evaluate(self, node: 'OrchestratorNode', subtask_id: str) -> bool: ...
 
 
-class VlmCriterion(Criterion):
-    """Pass when vlm_node's latest Verdict for this sub-task says passed."""
-
-    def evaluate(self, node, subtask_id) -> bool:
-        v = node.latest_verdict
-        return v is not None and v.subtask_id == subtask_id and v.passed
-
-
 @dataclass
 class DelayCriterion(Criterion):
     """Pass ``seconds`` after on_start (not entry — see _tick). Placeholder that
-    asserts nothing about the world; replace with uwb_pose / vlm once wired."""
+    asserts nothing about the world; replace with a real arrival signal once wired."""
 
     seconds: float = 0.0
 
@@ -151,7 +144,7 @@ class VoiceKeywordCriterion(Criterion):
 class CompositeCriterion(Criterion):
     """All-of (AND). Worth it only when children catch different failure modes and
     a false positive is costlier — P(all) is a product, so AND lowers the pass
-    rate and adds false negatives. (grasp: joint AND vlm; arrival: uwb alone.)"""
+    rate and adds false negatives. (grasp: joint AND scene; arrival: uwb alone.)"""
 
     children: list = field(default_factory=list)
 
@@ -173,7 +166,6 @@ def _req(spec: dict, key: str, tag: str):
 
 
 _CRITERION_BUILDERS = {
-    'vlm': lambda s: VlmCriterion(),
     'always': lambda s: AlwaysCriterion(),
     'delay': lambda s: DelayCriterion(seconds=float(_req(s, 'seconds', 'delay'))),
     'voice_keyword': lambda s: VoiceKeywordCriterion(
@@ -192,7 +184,7 @@ _NOT_PORTED = {
 
 
 def build_criterion(spec: dict) -> Criterion:
-    tag = spec.get('type')   # required — a missing type used to default to a never-passing vlm
+    tag = spec.get('type')   # required — no implicit default
     if tag is None:
         raise ScenarioConfigError(
             f'success.type is required; known: {sorted(_CRITERION_BUILDERS)}')
@@ -263,8 +255,6 @@ class OrchestratorNode(Node):
         self.declare_parameter('scenario_dir', default_dir)
         self.declare_parameter('transcript_topic', '/cortex/stt/transcript')
         self.declare_parameter('status_topic', '/cortex/task_status')
-        self.declare_parameter('verdict_topic', '/cortex/critic/verdict')
-        self.declare_parameter('active_subtask_topic', '/cortex/active_subtask')
         self.declare_parameter('say_topic', '/cortex/tts/say')
         self.declare_parameter('stop_topic', '/cortex/tts/stop')   # tts barge-in
         self.declare_parameter('tick_rate_hz', 10.0)
@@ -311,7 +301,6 @@ class OrchestratorNode(Node):
 
         # --- run state (mutated only inside the mutually-exclusive callback
         #     group below, so never by two threads at once — see grp) --------
-        self.latest_verdict = None       # cached Verdict from vlm_node
         self._active = None              # active Scenario
         self._index = 0                  # current sub-task index
         self._criterion = None           # current sub-task's Criterion
@@ -321,18 +310,15 @@ class OrchestratorNode(Node):
         self._transcripts: list = []
 
         # --- io -----------------------------------------------------------
-        # One mutually-exclusive group for transcript / verdict / tick so state
-        # (_active, _index, latest_verdict, ...) has a single writer at a time.
+        # One mutually-exclusive group for transcript / tick so state
+        # (_active, _index, ...) has a single writer at a time.
         grp = MutuallyExclusiveCallbackGroup()
         self.status_pub = self.create_publisher(TaskStatus, g('status_topic').value, 10)
-        self.active_pub = self.create_publisher(Subtask, g('active_subtask_topic').value, 10)
         self.say_pub = self.create_publisher(ActionCmd, g('say_topic').value, 10)
         self.stop_pub = self.create_publisher(Bool, g('stop_topic').value, 10)   # tts barge-in
 
         self.create_subscription(
             String, g('transcript_topic').value, self._on_transcript, 10, callback_group=grp)
-        self.create_subscription(
-            Verdict, g('verdict_topic').value, self._on_verdict, 10, callback_group=grp)
 
         self.create_timer(1.0 / tick_hz, self._tick, callback_group=grp)
 
@@ -480,9 +466,6 @@ class OrchestratorNode(Node):
                 return
         # No trigger matched — ignore (not every utterance is a command).
 
-    def _on_verdict(self, msg: Verdict) -> None:
-        self.latest_verdict = msg
-
     # --- scenario lifecycle -----------------------------------------------
     def _request(self, sc: Scenario) -> None:
         """A trigger matched. Preempt the running scenario (fire-and-forget cancel)
@@ -507,17 +490,10 @@ class OrchestratorNode(Node):
         st = self._current()
         if st is None:
             return
-        self.latest_verdict = None
         self._transcripts.clear()        # voice_keyword sees only THIS sub-task's speech
         self._criterion = st.criterion
         self._started = False            # _t0 is set on on_start, not here — see _tick
         self._dispatch(st.on_create)                 # announce
-        # tell vlm_node what to judge
-        sub = Subtask()
-        sub.id = st.name
-        sub.success_check = str(st.success.get('check', st.success.get('type', '')))
-        sub.timeout_sec = st.timeout_s
-        self.active_pub.publish(sub)
         self._publish_status(TaskStatus.STATE_RUNNING, current_subtask=st.name)
 
     def _tick(self) -> None:

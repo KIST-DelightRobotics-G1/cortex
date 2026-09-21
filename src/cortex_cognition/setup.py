@@ -21,7 +21,7 @@ setup(
     zip_safe=True,
     maintainer='박성용',
     maintainer_email='park50260@gmail.com',
-    description='Cognition layer: hook-driven scenario orchestrator (TaskSrv form).',
+    description='Cognition layer: LLM streamed subtask planner + orchestrator (llm / static modes).',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={

@@ -25,9 +25,9 @@ STT turns sound into symbols (perception), TTS is the robot acting (action).
 | # | Package | Layer | Notes |
 |---|---|---|---|
 | 1 | `g1_onboard_msgs` | — | Shared interfaces submodule (SSOT) — **do not fork** |
-| 2 | `cortex_msgs` | — | Cortex-internal: `Subtask` / `TaskStatus` / `Verdict`. `CommandStatus` is a prototype destined for SSOT — proposal written up on the Notion page (전달 사항 / 07/17 / Cancel Sync) |
-| 3 | `cortex_perception` | **인지** | `stt_node` (speech-band filter → Google STT → transcript, echo-cancelled), `vlm_node` (scene + `success_check` → `Verdict`) |
-| 4 | `cortex_cognition` | **상위 추론** | `orchestrator_node` (JSON5 scenarios, hook lifecycle, preemption, connectors) |
+| 2 | `cortex_msgs` | — | Cortex-internal: `PlanRequest` / `PlanStep` (LLM stream), `SubtaskCmd` / `SubtaskState` (nav·VLA contract, spec v0.1), `CheckTarget` srv, `TraceEvent` (display), `TaskStatus` |
+| 3 | `cortex_perception` | **인지** | `stt_node` (speech-band filter → Google STT → transcript, echo-cancelled), `detector_node` (YOLO presence check service; `backend: always` stub until the real detector lands) |
+| 4 | `cortex_cognition` | **상위 추론** | `llm_node` (utterance → streamed subtask lines, validated against `config/actions.yaml`), `orchestrator_node` (`planner_mode: llm` executes the stream over SubtaskCmd/State; `static` runs JSON5 scenarios) |
 | 5 | `cortex_action` | **제어** | `tts_node` (CLOVA Voice → 16 kHz `AudioPCM`, cancelable) |
 | 6 | `cortex_bringup` | — | Top-level launch + params |
 
@@ -43,23 +43,24 @@ through the cognition layer's connectors. See *Blocked on external specs*.
 ## Flow
 
 ```
-발화 ─STT─▶ orchestrator: triggers[] 매칭 ─▶ 시나리오
-                │  sub-task lifecycle: on_create → on_start → success poll → on_success
-                │  dispatch by label ─┬─ speak      → tts_node
-                │                     ├─ navigation → Nav Planner  ─┐
-                │                     └─ vla        → VLA inference ─┴─▶ Gearsonic Handler → G1
-                ◀── Verdict ── vlm_node (씬 판정)
-                ◀── CommandStatus ── Handler (정지 확인)
+발화 ─STT─▶ orchestrator ─PlanRequest(state)─▶ llm_node ─PlanStep × N (한 줄씩)─▶ orchestrator
+                │  첫 줄 도착 즉시 step 0 실행. step마다:
+                │    CheckTarget(detector) ─▶ SubtaskCmd ─▶ nav-planner / VLA runner
+                │    ◀── SubtaskState 10 Hz (IDLE/RUNNING/DONE/FAILED) — accept·stale·timeout 판정
+                │  say → tts_node · TraceEvent → gui_bridge_node (생각의 흐름 표시)
 ```
 
-- **No LLM router**: a scenario declares its own `triggers[]`; a transcript is keyword-matched.
-- **Success = VLM**: `vlm_node` judges the scene and publishes a `Verdict`; the orchestrator's
-  `VlmCriterion` reads the cache (VLM inference never runs on the tick loop).
-- **Preemption is a handshake**: a new trigger cancels, buffers the new scenario, and waits for
-  the module to confirm it stopped (`CommandStatus`) before starting — old and new motions never overlap.
+- **llm mode** (`planner_mode: llm`, default in `cortex_params.yaml`): the LLM generates subtasks
+  from a closed vocabulary (`src/cortex_cognition/config/actions.yaml` — prompt, validator, routing,
+  VLA instruction template and precheck all come from this one file). Lines stream in; the
+  orchestrator starts before the plan is complete. Policy lives in `executor.py` (rclpy-free, pytest).
+- **static mode**: a scenario declares its own `triggers[]`; a transcript is keyword-matched and the
+  JSON5 sub-task lifecycle runs (criteria: always / delay / voice_keyword / composite).
+- Module contract and judgment parameters: *Subtask_state_interface_spec v0.1*.
 
-Scenarios are JSON5 under `src/cortex_cognition/config/scenarios/` — see
-`refrigerator_pickup.json5` for the hook/criteria schema.
+Offline loop without robot, mic or network: `ros2 launch cortex_bringup llm_demo.launch.py`
+(dummy LLM + mock nav/vla + stub detector; `backend:=gemini` for the real LLM, `speech:=true`
+to add stt/tts).
 
 ---
 
@@ -146,7 +147,8 @@ Each `TODO(REQ-XX) [TASK-XX]` in code links to the matching Notion page.
 |---|---|
 | Gearsonic Handler interface | `navigation` / `vla` connector dispatch + cancel (stubs) |
 | Handler `CommandStatus` publishing | real stop-confirmation (`_stopped`, `assume_stopped=false`) |
-| VLM backend | `vlm_node._evaluate` |
+| Real detector | `detector_node` `backend: yolo` (YOLO26s; `cucumber` needs a fine-tuned weight) |
+| nav-planner / VLA runner SubtaskCmd/State | executor runs against `mock_module_node` until then |
 | `kist-ext-sensor-io` | owns the `/bridge/*` audio publishers. We follow the ICD names; if that repo picks different ones, change `cortex_params.yaml` — not code |
 
 ---

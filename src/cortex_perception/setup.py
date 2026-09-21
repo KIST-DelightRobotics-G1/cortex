@@ -23,14 +23,13 @@ setup(
     zip_safe=True,
     maintainer='박성용',
     maintainer_email='park50260@gmail.com',
-    description='Perception layer: STT (Google) and VLM scene critic.',
+    description='Perception layer: STT (Google) and YOLO presence detector.',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'detector_node = cortex_perception.detector_node:main',
             'stt_node = cortex_perception.stt_node:main',
-            'vlm_node = cortex_perception.vlm_node:main',
         ],
     },
 )

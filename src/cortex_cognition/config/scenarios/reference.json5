@@ -16,7 +16,6 @@
 //
 // ── success.type ────────────────────────────────────────────────────
 //   always / delay / voice_keyword / composite   ← 이 파일에서 전부 시연
-//   vlm                                          ← refrigerator_pickup.json5 참고
 //                                                   (백엔드 stub이라 아직 통과 못 함 →
 //                                                    여기 넣으면 레퍼런스가 항상 실패해서 제외)
 //   uwb_pose / joint_state / voice_choice        ← 미포팅. 쓰면 로드 시 이유와 함께 에러.
