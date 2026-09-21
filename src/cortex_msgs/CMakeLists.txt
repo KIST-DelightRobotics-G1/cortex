@@ -20,6 +20,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SubtaskCmd.msg"
   "msg/SubtaskState.msg"
   "msg/TraceEvent.msg"
+  "msg/Detection.msg"
+  "msg/DetectionArray.msg"
   "srv/CheckTarget.srv"
   DEPENDENCIES std_msgs builtin_interfaces
 )
