@@ -18,8 +18,9 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         # --- perception ---
         node('cortex_perception', 'stt_node'),
-        node('cortex_perception', 'vlm_node'),
+        node('cortex_perception', 'detector_node'),   # YOLO precheck (CheckTarget)
         # --- cognition ---
+        node('cortex_cognition', 'llm_node'),         # utterance -> streamed PlanStep
         node('cortex_cognition', 'orchestrator_node'),
         # --- action ---
         node('cortex_action', 'tts_node'),

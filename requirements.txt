@@ -18,3 +18,13 @@ google-cloud-speech>=2.21.0
 
 # --- TTS: Naver CLOVA Voice Premium REST [REQ-29] ---
 aiohttp==3.13.4
+
+# --- LLM subtask planning (cortex_cognition llm_node) [SYS-REQ-44] ---
+# Either SDK is optional at runtime (backend: dummy needs neither).
+google-genai>=1.0
+openai>=1.0
+
+# --- detector_node (cortex_perception) — optional; without it CheckTarget answers model_not_loaded
+# ultralytics>=8.3      # pulls torch + opencv; install on the workstation only
+# --- gui_bridge_node ---
+websockets>=12
