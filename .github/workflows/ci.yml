@@ -65,9 +65,12 @@ jobs:
             log
           # Hash anything that affects build outputs. Scenarios are installed as
           # package data, so *.json5 counts too.
-          key: colcon-${{ matrix.ros_distro }}-${{ hashFiles('src/**/package.xml', 'src/**/CMakeLists.txt', 'src/**/*.py', 'src/**/*.msg', 'src/**/*.yaml', 'src/**/*.json5') }}
-          restore-keys: |
-            colcon-${{ matrix.ros_distro }}-
+          # Exact-match only: a build/ tree restored from an older commit can
+          # reference files that no longer exist (a deleted .json5 / .msg makes
+          # the python egg copy step fail). A miss costs a full rebuild (~3 min,
+          # C++ still served by ccache); a stale hit costs a red build for the
+          # wrong reason.
+          key: colcon-${{ matrix.ros_distro }}-${{ hashFiles('src/**/package.xml', 'src/**/CMakeLists.txt', 'src/**/*.py', 'src/**/*.msg', 'src/**/*.srv', 'src/**/*.yaml', 'src/**/*.json5') }}
 
       - name: Install build tooling
         shell: bash
