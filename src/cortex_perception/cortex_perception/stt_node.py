@@ -15,6 +15,16 @@ coordination with tts_node is needed — NX speaker_node owns the playing flag.
 ``echo_cancel_lead_ms`` (default 0) can pre-mute before the DDS hop lands; it is
 the only path that would need a tts_node -> stt_node signal, and it is off.
 
+Backends (parameter ``backend``):
+    google_cloud     Speech-to-Text v1 (legacy). ``model``: default | latest_short | latest_long.
+    google_cloud_v2  Speech-to-Text v2. ``model``: chirp_3 | latest_short | latest_long;
+                     ``location`` (global | asia-northeast3 | us-central1 …);
+                     ``speech_end_timeout_s`` > 0 ends the stream after that much
+                     silence following speech, which forces the final result out
+                     early (the worker reopens the stream at once; queued audio is
+                     not lost). This is the knob v1 does not have.
+    dummy            text-as-PCM for offline runs.
+
 One module by convention (see task_srv_provider.py: no pytest infra, so the
 modularity payoff is nil). Sections: filter · types/config · node.
 """
@@ -41,6 +51,23 @@ from std_msgs.msg import String
 from g1_onboard_msgs.msg import AudioPCM, EstopFlag, SpeakerState
 
 _MAX_RECONNECT = 10
+
+
+def _load_google_credentials_v2():
+    """(credentials | None, project_id | None). Project comes from the
+    service-account JSON, or GOOGLE_CLOUD_PROJECT when the SDK auto-discovers."""
+    b64 = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS_B64')
+    path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+    info = None
+    if b64:
+        info = json.loads(base64.b64decode(b64))
+    elif path and os.path.exists(path):
+        info = json.load(open(path, encoding='utf-8'))
+    project = os.environ.get('GOOGLE_CLOUD_PROJECT') or (info or {}).get('project_id')
+    if info is None:
+        return None, project
+    from google.oauth2 import service_account
+    return service_account.Credentials.from_service_account_info(info), project
 
 
 def _load_google_credentials() -> Optional[Any]:
@@ -82,6 +109,7 @@ class StreamingSpeechFilter:
 # ===========================================================================
 class STTBackend(str, Enum):
     GOOGLE_CLOUD = 'google_cloud'
+    GOOGLE_CLOUD_V2 = 'google_cloud_v2'
     DUMMY = 'dummy'       # local verification; no credentials needed
 
 
@@ -118,6 +146,13 @@ class STTConfig:
     # interim_results filtering is this node's sole responsibility: when False,
     # only is_final=True events are published. Downstream does not re-filter.
     interim_results: bool = False
+    # Recognition model. v1: default | latest_short | latest_long. v2: chirp_3 | latest_short | latest_long.
+    model: str = 'default'
+    # v2 only: regional endpoint (chirp_3 is not served from every region).
+    location: str = 'global'
+    # v2 only: 0 = server default endpointing. >0 = close the stream this many
+    # seconds after speech stops (final result is flushed at that moment).
+    speech_end_timeout_s: float = 0.0
     # Speech band IIR filter (HPF + LPF).
     highpass_hz: float = 120.0   # Hz — removes low-freq vibration / DC
     lowpass_hz: float = 5500.0   # Hz — preserves Korean fricatives (ㅅ/ㅎ/ㅊ up to ~6kHz)
@@ -147,6 +182,9 @@ class SttNode(Node):
         self.declare_parameter('language_code', 'ko-KR')
         self.declare_parameter('sample_rate_hz', 16000)
         self.declare_parameter('interim_results', False)
+        self.declare_parameter('model', 'default')
+        self.declare_parameter('location', 'global')
+        self.declare_parameter('speech_end_timeout_s', 0.0)
         self.declare_parameter('highpass_hz', 120.0)
         self.declare_parameter('lowpass_hz', 5500.0)
         self.declare_parameter('input_gain_db', 0.0)
@@ -159,6 +197,9 @@ class SttNode(Node):
             language_code=g('language_code').value,
             sample_rate_hz=int(g('sample_rate_hz').value),
             interim_results=bool(g('interim_results').value),
+            model=str(g('model').value),
+            location=str(g('location').value),
+            speech_end_timeout_s=float(g('speech_end_timeout_s').value),
             highpass_hz=float(g('highpass_hz').value),
             lowpass_hz=float(g('lowpass_hz').value),
             input_gain_db=float(g('input_gain_db').value),
@@ -209,6 +250,8 @@ class SttNode(Node):
 
         if self._config.backend == STTBackend.GOOGLE_CLOUD:
             target, name = self._google_worker, 'stt_google_worker'
+        elif self._config.backend == STTBackend.GOOGLE_CLOUD_V2:
+            target, name = self._google_v2_worker, 'stt_google_v2_worker'
         elif self._config.backend == STTBackend.DUMMY:
             target, name = self._dummy_worker, 'stt_dummy_worker'
         else:
@@ -366,12 +409,15 @@ class SttNode(Node):
                 else speech.SpeechClient()
 
         client = _new_client()
-        recognition_config = speech.RecognitionConfig(
+        rc = dict(
             encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
             sample_rate_hertz=self._config.sample_rate_hz,
             language_code=self._config.language_code,
             enable_automatic_punctuation=True,
         )
+        if self._config.model and self._config.model != 'default':
+            rc['model'] = self._config.model
+        recognition_config = speech.RecognitionConfig(**rc)
         streaming_config = speech.StreamingRecognitionConfig(
             config=recognition_config,
             interim_results=self._config.interim_results,
@@ -444,6 +490,112 @@ class SttNode(Node):
         if self._state != STTState.FAILED:
             self._state = STTState.IDLE
         self.get_logger().info('Google worker stopped')
+
+    # --- Google Cloud STT v2 backend --------------------------------------
+    def _google_v2_worker(self) -> None:
+        """Same reconnect loop as v1, on the v2 API (chirp_3, regional endpoint,
+        voice-activity timeout)."""
+        try:
+            from google.api_core.client_options import ClientOptions
+            from google.cloud.speech_v2 import SpeechClient
+            from google.cloud.speech_v2.types import cloud_speech as t
+            from google.protobuf import duration_pb2
+        except ImportError:
+            self.get_logger().error(
+                'google-cloud-speech (v2) not installed — pip install -r requirements.txt')
+            self._state = STTState.FAILED
+            return
+
+        credentials, project = _load_google_credentials_v2()
+        if not project:
+            self.get_logger().error('v2 needs a project id (service-account JSON or GOOGLE_CLOUD_PROJECT)')
+            self._state = STTState.FAILED
+            return
+        loc = self._config.location or 'global'
+        opts = ClientOptions(api_endpoint=f'{loc}-speech.googleapis.com') if loc != 'global' else None
+
+        def _new_client():
+            return SpeechClient(credentials=credentials, client_options=opts) if credentials \
+                else SpeechClient(client_options=opts)
+
+        client = _new_client()
+        recognizer = f'projects/{project}/locations/{loc}/recognizers/_'
+        rc = t.RecognitionConfig(
+            explicit_decoding_config=t.ExplicitDecodingConfig(
+                encoding=t.ExplicitDecodingConfig.AudioEncoding.LINEAR16,
+                sample_rate_hertz=self._config.sample_rate_hz, audio_channel_count=1),
+            language_codes=[self._config.language_code],
+            model=self._config.model if self._config.model not in ('', 'default') else 'chirp_3',
+            features=t.RecognitionFeatures(enable_automatic_punctuation=True))
+        sf = dict(interim_results=self._config.interim_results, enable_voice_activity_events=True)
+        if self._config.speech_end_timeout_s > 0:
+            s = self._config.speech_end_timeout_s
+            sf['voice_activity_timeout'] = t.StreamingRecognitionFeatures.VoiceActivityTimeout(
+                speech_end_timeout=duration_pb2.Duration(seconds=int(s), nanos=int((s % 1) * 1e9)))
+        streaming_config = t.StreamingRecognitionConfig(
+            config=rc, streaming_features=t.StreamingRecognitionFeatures(**sf))
+
+        def requests():
+            yield t.StreamingRecognizeRequest(recognizer=recognizer, streaming_config=streaming_config)
+            while not self._stop_event.is_set():
+                try:
+                    chunk = self._audio_queue.get(timeout=0.02)
+                except queue.Empty:
+                    continue
+                if chunk is None:
+                    break
+                yield t.StreamingRecognizeRequest(audio=chunk)
+
+        reconnect_count = 0
+        backoff = 1.0
+        while not self._stop_event.is_set():
+            if reconnect_count > _MAX_RECONNECT:
+                self._state = STTState.FAILED
+                self.get_logger().error(f'max reconnect attempts ({_MAX_RECONNECT}) exhausted -> FAILED')
+                break
+            try:
+                if reconnect_count:
+                    self._state = STTState.RECONNECTING
+                    self.get_logger().info(f'Google v2 reconnecting ({reconnect_count}/{_MAX_RECONNECT})')
+                else:
+                    self.get_logger().info(
+                        f'Google v2 streaming session started (model={rc.model}, loc={loc}, '
+                        f'end_timeout={self._config.speech_end_timeout_s}s)')
+                self._state = STTState.STREAMING
+                for response in client.streaming_recognize(requests=requests()):
+                    if self._stop_event.is_set():
+                        return
+                    if response.speech_event_type:
+                        self.get_logger().debug(f'speech event {response.speech_event_type}')
+                    for result in response.results:
+                        if not result.alternatives:
+                            continue
+                        alt = result.alternatives[0]
+                        if result.is_final or self._config.interim_results:
+                            self._emit_transcript(TranscriptEvent(
+                                text=alt.transcript, ts=time.monotonic(), is_final=result.is_final,
+                                confidence=alt.confidence if alt.confidence > 0 else None))
+                # Stream ended normally: voice-activity timeout (by design) or the
+                # ~5 min rotation. Reopen immediately; the audio queue kept buffering.
+                if not self._stop_event.is_set():
+                    reconnect_count = 0
+                    backoff = 1.0
+            except Exception as exc:  # noqa: BLE001 - worker must never die
+                if self._stop_event.is_set():
+                    break
+                self._drain_audio_queue()
+                reconnect_count += 1
+                self.get_logger().warning(
+                    f'Google v2 stream error ({exc}) — retry {reconnect_count}/{_MAX_RECONNECT} in {backoff:.1f}s')
+                self._stop_event.wait(timeout=backoff)
+                backoff = min(backoff * 2, 30.0)
+                try:
+                    client = _new_client()
+                except Exception:  # noqa: BLE001
+                    pass
+        if self._state != STTState.FAILED:
+            self._state = STTState.IDLE
+        self.get_logger().info('Google v2 worker stopped')
 
     # --- DUMMY backend (local verification — no credentials) --------------
     def _dummy_worker(self) -> None:
