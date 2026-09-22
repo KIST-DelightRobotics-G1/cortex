@@ -3,6 +3,14 @@
     ActionCmd (/cortex/tts/say)  -> Clova REST -> resample 16k -> AudioPCM
                                                                   (/bridge/cmd/audio_out)
 
+PCM cache + prefetch (SYS-REQ-29 latency): the sentences this robot says are
+short and repeat (LLM `say` lines, fixed phrases). Every synthesized sentence is
+kept as 16 kHz PCM under ``cache_dir`` keyed by (backend, voice, speed, text);
+a cache hit publishes in ~0 ms instead of the ~0.4–1.4 s CLOVA round-trip
+(measured: TTFA p50 0.65 s, p95 1.35 s). ``/cortex/tts/prefetch`` (ActionCmd)
+synthesizes into the cache without playing — the orchestrator sends the say of
+every PlanStep as it arrives, seconds before that step starts.
+
 Open-loop: the orchestrator fires ActionCmd; this node synthesizes and publishes,
 and reports no status back. Synthesis runs on a worker thread (one asyncio.run per
 call) so the executor never blocks on the cloud round-trip. Barge-in / E-STOP
@@ -14,9 +22,14 @@ NCP_CLOVA_CLIENT_ID / _SECRET (env); missing → warn + drop, not crash.
 """
 
 import asyncio
+import hashlib
+import queue
 import io
 import logging
 import os
+import threading
+import time
+import traceback
 import wave
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -28,6 +41,7 @@ import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool
 
 from cortex_msgs.msg import ActionCmd
@@ -59,6 +73,7 @@ class TTSConfig:
     # On timeout: log + drop, no retry — a late audio cue would desync the flow,
     # and TTS failure does not fail a sub-task.
     request_timeout_s: float = 5.0
+    cache_dir: str = ''                   # '' = disabled
 
 
 # ===========================================================================
@@ -78,6 +93,9 @@ class TtsNode(Node):
         self.declare_parameter('say_topic', '/cortex/tts/say')
         self.declare_parameter('barge_in_topic', '/cortex/tts/stop')
         self.declare_parameter('audio_out_topic', '/bridge/cmd/audio_out')
+        self.declare_parameter('prefetch_topic', '/cortex/tts/prefetch')   # upcoming say lines (urgent)
+        self.declare_parameter('warmup_topic', '/cortex/tts/warmup')       # boot-time phrase list (background)
+        self.declare_parameter('cache_dir', os.path.expanduser('~/.cache/cortex_tts'))
         self.declare_parameter('estop_topic', '/bridge/safety/estop')
         self.declare_parameter('backend', TTSBackend.NAVER_CLOVA.value)
         self.declare_parameter('language_code', 'ko-KR')
@@ -95,6 +113,7 @@ class TtsNode(Node):
             clova_sample_rate_hz=int(g('clova_sample_rate_hz').value),
             voice=g('voice').value,
             speed=int(g('speed').value),
+            cache_dir=os.path.expanduser(str(g('cache_dir').value)),
             request_timeout_s=float(g('request_timeout_s').value),
         )
 
@@ -103,6 +122,8 @@ class TtsNode(Node):
         self._inflight_task: Optional[asyncio.Task] = None
         self._inflight_loop: Optional[asyncio.AbstractEventLoop] = None
 
+        if self._config.cache_dir:
+            os.makedirs(self._config.cache_dir, exist_ok=True)
         self._client_id = os.environ.get(self._config.client_id_env)
         self._client_secret = os.environ.get(self._config.client_secret_env)
         if not self._client_id or not self._client_secret:
@@ -118,12 +139,25 @@ class TtsNode(Node):
         self.create_subscription(
             ActionCmd, g('say_topic').value, self._on_say, 10, callback_group=grp)
         self.create_subscription(
+            ActionCmd, g('prefetch_topic').value, lambda m: self._enqueue_prefetch(m.text, 0), 50,
+            callback_group=grp)
+        self.create_subscription(
+            ActionCmd, g('warmup_topic').value, lambda m: self._enqueue_prefetch(m.text, 1),
+            QoSProfile(depth=64, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL),   # matches the orchestrator's latched warm-up
+            callback_group=grp)
+        self.create_subscription(
             Bool, g('barge_in_topic').value, self._on_barge_in, 10, callback_group=grp)
         self.create_subscription(
             EstopFlag, g('estop_topic').value, self._on_estop_msg, 10, callback_group=grp)
 
-        # Synthesis runs here, off the executor thread.
+        # Synthesis runs here, off the executor thread. Prefetch has its own
+        # worker so warming the cache never delays a live say; plan-step lines
+        # (priority 0) jump ahead of the boot-time warm-up list (priority 1).
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='tts')
+        self._prefetch_q: queue.PriorityQueue = queue.PriorityQueue()
+        self._prefetch_seq = 0
+        threading.Thread(target=self._prefetch_loop, daemon=True, name='tts-prefetch').start()
 
         self.get_logger().info(
             f"tts_node up (backend={self._config.backend.value}, voice={self._config.voice}, "
@@ -137,7 +171,20 @@ class TtsNode(Node):
     # --- subscriptions ----------------------------------------------------
     def _on_say(self, msg: ActionCmd) -> None:
         """Hand the text to the worker; never block the executor."""
-        self._pool.submit(self._synth_worker, msg.text)
+        self._pool.submit(self._synth_worker, msg.text, time.perf_counter())
+
+    def _enqueue_prefetch(self, text: str, priority: int) -> None:
+        """Warm the cache for a sentence that will be said later (no playback)."""
+        text = (text or '').strip()
+        if text and self._cache_path(text) and not os.path.exists(self._cache_path(text)):
+            self._prefetch_seq += 1
+            self._prefetch_q.put((priority, self._prefetch_seq, text))
+
+    def _prefetch_loop(self) -> None:
+        while True:
+            _, _, text = self._prefetch_q.get()
+            if self._cache_get(text) is None:          # may have been said (and cached) meanwhile
+                self._prefetch_worker(text)
 
     def _on_barge_in(self, msg: Bool) -> None:
         """Barge-in: user interrupted, cut playback synthesis immediately."""
@@ -158,15 +205,58 @@ class TtsNode(Node):
         if self._estop_active:
             self.cancel()
 
+    # --- cache --------------------------------------------------------------
+    def _cache_path(self, text: str) -> Optional[str]:
+        if not self._config.cache_dir:
+            return None
+        c = self._config
+        key = hashlib.sha1(f'{c.backend.value}|{c.voice}|{c.speed}|{c.sample_rate_hz}|{text}'
+                           .encode('utf-8')).hexdigest()
+        return os.path.join(c.cache_dir, key + '.pcm')
+
+    def _cache_get(self, text: str) -> Optional[bytes]:
+        p = self._cache_path(text)
+        if p and os.path.exists(p):
+            with open(p, 'rb') as f:
+                return f.read()
+        return None
+
+    def _cache_put(self, text: str, pcm: bytes) -> None:
+        p = self._cache_path(text)
+        if p and pcm:
+            tmp = p + '.tmp'
+            with open(tmp, 'wb') as f:
+                f.write(pcm)
+            os.replace(tmp, p)
+
+    def _prefetch_worker(self, text: str) -> None:
+        try:
+            pcm = asyncio.run(self._fetch_pcm(text))
+            if pcm:
+                self._cache_put(text, pcm)
+                self.get_logger().info(f'prefetched {text!r} ({len(pcm)} B)')
+        except Exception:  # noqa: BLE001
+            self.get_logger().error(f'prefetch failed for {text!r}' + chr(10) + traceback.format_exc())
+
     # --- synthesis --------------------------------------------------------
-    def _synth_worker(self, text: str) -> None:
+    def _synth_worker(self, text: str, t_req: float) -> None:
         """One asyncio.run per call — matches the workstation's per-call loop."""
         try:
-            asyncio.run(self.synthesize(text))
+            asyncio.run(self.synthesize(text, t_req))
         except Exception:  # noqa: BLE001 - a failed announcement must not kill the worker
-            self.get_logger().exception(f'synthesis worker failed for {text!r}')
+            self.get_logger().error(f'synthesis worker failed for {text!r}' + chr(10) + traceback.format_exc())
 
-    async def synthesize(self, text: str) -> None:
+    async def _fetch_pcm(self, text: str) -> Optional[bytes]:
+        """Cloud round-trip → 16 kHz mono int16 PCM (no publish, no cache)."""
+        wav_bytes = await self._http_post_clova(text)
+        if wav_bytes is None:
+            return None
+        pcm, src_rate, channels = self._decode_wav(wav_bytes)
+        if pcm is None:
+            return None
+        return self._resample_to_wire(pcm, src_rate, channels)
+
+    async def synthesize(self, text: str, t_req: Optional[float] = None) -> None:
         """Synthesize ``text`` and publish the PCM stream (fire-and-forget).
 
         Gate on E-STOP, POST to Clova, decode WAV, resample, publish. On
@@ -176,29 +266,38 @@ class TtsNode(Node):
             self.get_logger().info(f'synthesize: E-STOP active — aborting (text={text!r})')
             return
         text = (text or '').strip()
-        if not text or not self._client_id or not self._client_secret:
-            self.get_logger().warning(f'synthesize: nothing to do — dropping (text={text!r})')
+        if not text:
+            return
+        t_req = t_req or time.perf_counter()
+        cached = self._cache_get(text)
+        if cached is not None:
+            self._publish(cached)
+            self.get_logger().info(
+                f'say {text!r}: cache hit, first publish +{(time.perf_counter() - t_req) * 1000:.0f} ms')
+            return
+        if not self._client_id or not self._client_secret:
+            self.get_logger().warning(f'synthesize: no credentials — dropping (text={text!r})')
             return
 
         self._inflight_task = asyncio.current_task()
         self._inflight_loop = asyncio.get_running_loop()
         try:
-            wav_bytes = await self._http_post_clova(text)
-            if wav_bytes is None:
+            pcm = await self._fetch_pcm(text)
+            if pcm is None:
                 return
             # E-STOP / barge-in may have fired during the network round-trip.
             if self._estop_active:
                 self.get_logger().info('synthesize: E-STOP fired mid-request — dropping audio')
                 return
-            pcm, src_rate, channels = self._decode_wav(wav_bytes)
-            if pcm is None:
-                return
-            self._publish(self._resample_to_wire(pcm, src_rate, channels))
+            self._publish(pcm)
+            self.get_logger().info(
+                f'say {text!r}: cache miss, first publish +{(time.perf_counter() - t_req) * 1000:.0f} ms')
+            self._cache_put(text, pcm)
         except asyncio.CancelledError:
             self.get_logger().info('synthesize: cancelled (barge-in / E-STOP / stop)')
             raise
         except Exception:  # noqa: BLE001 - log + drop, no retry (TTSConfig policy)
-            self.get_logger().exception(f'synthesize: failed; dropping (text={text!r})')
+            self.get_logger().error(f'synthesize: failed; dropping (text={text!r})' + chr(10) + traceback.format_exc())
         finally:
             self._inflight_task = None
             self._inflight_loop = None

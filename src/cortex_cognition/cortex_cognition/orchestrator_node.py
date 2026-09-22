@@ -45,7 +45,7 @@ from cortex_msgs.msg import (ActionCmd, PlanRequest, PlanStep, SubtaskCmd, Subta
                              TaskStatus, TraceEvent)
 from cortex_msgs.srv import CheckTarget
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
 from . import executor as ex
 from . import planner
@@ -281,6 +281,9 @@ class OrchestratorNode(Node):
         self.declare_parameter('safe_stop_vla_s', 10.0)
         self.declare_parameter('plan_timeout_s', 20.0)
         self.declare_parameter('detector_fail_open', True)
+        self.declare_parameter('tts_prefetch_topic', '/cortex/tts/prefetch')
+        self.declare_parameter('tts_warmup_topic', '/cortex/tts/warmup')
+        self.declare_parameter('ack_phrase', '네.')      # spoken the moment a request goes to the LLM; '' = off
 
         g = self.get_parameter
         scenario_dir = g('scenario_dir').value
@@ -339,6 +342,16 @@ class OrchestratorNode(Node):
         self._epoch = int(time.time())
         self.stop_keywords = list(g('stop_keywords').value)
         self.plan_req_pub = self.create_publisher(PlanRequest, g('llm_request_topic').value, 10)
+        # TRANSIENT_LOCAL so the warm-up burst reaches a tts_node that discovers
+        # us late; drip-fed one per 50 ms so nothing overruns a history queue.
+        latched = QoSProfile(depth=64, reliability=ReliabilityPolicy.RELIABLE,
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.prefetch_pub = self.create_publisher(ActionCmd, g('tts_prefetch_topic').value, 50)
+        self.warmup_pub = self.create_publisher(ActionCmd, g('tts_warmup_topic').value, latched)
+        self.ack_phrase = str(g('ack_phrase').value).strip()
+        self._warm_queue: list = []
+        self._warm_timer = self.create_timer(0.05, self._warm_tts_cache, callback_group=grp)
+        self._warm_started = self._now()
         reliable = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self.cmd_pub = {
             'nav': self.create_publisher(SubtaskCmd, g('nav_cmd_topic').value, reliable),
@@ -388,6 +401,37 @@ class OrchestratorNode(Node):
             f'llm mode: {len([a for a, s in self.cfg["actions"].items() if s.get("enabled")])} '
             f'actions, detector={g("detector_service").value}')
 
+    def _warm_tts_cache(self) -> None:
+        """Every fixed phrase / example say → tts prefetch, one per tick, starting 3 s after boot."""
+        if self._now() - self._warm_started < 3.0:
+            return
+        if self._warm_queue:
+            self.warmup_pub.publish(ActionCmd(text=self._warm_queue.pop()))
+            if not self._warm_queue:
+                self._warm_timer.cancel()
+            return
+        texts = set()
+        if self.ack_phrase:
+            texts.add(self.ack_phrase)
+        for ex in self.cfg.get('examples', []):
+            for ln in ex.get('lines', []):
+                texts.add(ln['say'])
+            if 'reply' in ex:
+                texts.add(ex['reply']['say'])
+        keys = set(self.cfg['vocab'].get('object', [])) | set(self.cfg['vocab'].get('person', []))
+        for key in self.cfg.get('phrases', {}):
+            if key in ('not_visible', 'step_failed', 'not_accepted'):
+                for k in keys:
+                    texts.add(planner.phrase(self.cfg, key, k))
+            elif key != 'module_lost':
+                texts.add(planner.phrase(self.cfg, key))
+        for k in ('이동', '조작'):
+            texts.add(planner.phrase(self.cfg, 'module_lost', k))
+        self._warm_queue = sorted(t for t in texts if t and t != self.ack_phrase)
+        if self.ack_phrase:
+            self._warm_queue.append(self.ack_phrase)         # popped first
+        self.get_logger().info(f'tts cache warm-up: {len(self._warm_queue)} sentences queued for prefetch')
+
     def _new_plan_id(self) -> str:
         self._seq += 1
         return f'p-{self._epoch}-{self._seq:04d}'
@@ -400,8 +444,12 @@ class OrchestratorNode(Node):
         plan_id = self._new_plan_id()
         state = self._exec.heard(plan_id, text)
         self.plan_req_pub.publish(PlanRequest(plan_id=plan_id, utterance=text, state=state))
+        if self.ack_phrase and not state.startswith('running'):
+            self._say(self.ack_phrase)                      # fills the LLM think time
 
     def _on_plan_step(self, m: PlanStep) -> None:
+        if m.kind == PlanStep.KIND_SUB and m.index > 0 and m.say:
+            self.prefetch_pub.publish(ActionCmd(text=m.say))   # ready before the step starts
         self._exec.on_step(m.plan_id, m.kind, m.index, m.action, list(m.args), m.say,
                            m.reply_kind, m.detail)
 
