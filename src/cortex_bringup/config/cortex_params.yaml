@@ -41,6 +41,9 @@ tts_node:
     voice: nara
     speed: 0                     # Clova [-5, +5]
     request_timeout_s: 5.0       # on timeout: log + drop, no retry
+    prefetch_topic: /cortex/tts/prefetch   # upcoming say lines (urgent, ahead of warm-up)
+    warmup_topic: /cortex/tts/warmup       # boot-time phrase list from the orchestrator (latched)
+    cache_dir: ~/.cache/cortex_tts         # 16 kHz PCM per sentence; '' disables. Measured CLOVA TTFA p50 0.65 s → hit ~0 ms
 
 orchestrator_node:
   ros__parameters:
@@ -79,6 +82,9 @@ orchestrator_node:
     # detector unavailable (no node / timeout / stale frame) -> proceed; only a real
     # "not visible" blocks the step. Set false to block on any missing verdict.
     detector_fail_open: true
+    tts_prefetch_topic: /cortex/tts/prefetch
+    tts_warmup_topic: /cortex/tts/warmup
+    ack_phrase: '네.'                   # said when a request goes to the LLM (idle only); '' = off
 
 llm_node:
   ros__parameters:
