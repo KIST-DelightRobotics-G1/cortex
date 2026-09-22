@@ -10,7 +10,15 @@ stt_node:
     speaker_state_topic: /bridge/audio/speaker_state   # comm_bridge outbound (was /bridge/sensors/* — mismatch)
     estop_topic: /bridge/safety/estop
     transcript_topic: /cortex/stt/transcript
-    backend: google_cloud        # google_cloud | dummy (dummy needs no credentials)
+    backend: google_cloud        # google_cloud (v1) | google_cloud_v2 | dummy (no credentials)
+    # v1 'default' is a long-form model: it never endpoints on its own and the
+    # final result only came at stream close (measured p50 6.2 s after speech
+    # end, 48 utterances). latest_short endpoints in 0.6 s p50. Keep it.
+    model: latest_short          # v1: default | latest_short — v2: chirp_3 | latest_short | latest_long
+    # v2 (backend: google_cloud_v2) needs roles/speech.client on the service
+    # account; pending on the KIST project. Then: model chirp_3, end timeout 0.5.
+    location: global             # v2 endpoint region; chirp_3 is not served everywhere (try us-central1)
+    speech_end_timeout_s: 0.5    # v2: flush the final result this long after speech stops (0 = server default)
     language_code: ko-KR
     sample_rate_hz: 16000        # AudioPCM locked format
     interim_results: false       # false = publish only is_final transcripts
