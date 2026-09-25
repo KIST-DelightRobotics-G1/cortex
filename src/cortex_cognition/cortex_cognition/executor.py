@@ -148,12 +148,26 @@ class Executor:
                              'speculative': True}
         return state
 
+    def _error_say(self, detail: str) -> str:
+        """KIND_ERROR 의 detail 을 사용자에게 들려줄 한 문장으로.
+
+        검증기 2 가 막았으면 llm_node 가 "<phrases 키>|<대상>" 으로 보낸다
+        (unknown_place|kitchen → "그곳은 아직 갈 수 없습니다."). 그 밖에는 일반 문구.
+        """
+        key, _, target = detail.partition('|')
+        if key in self.cfg.get('phrases', {}):
+            return planner.phrase(self.cfg, key, target)
+        return planner.phrase(self.cfg, 'plan_error')
+
     def on_step(self, plan_id: str, kind: int, index: int, action: str, args: list,
                 say: str, reply_kind: str, detail: str) -> None:
         KIND_SUB, KIND_END, KIND_REPLY, KIND_ERROR = 0, 1, 2, 3
         target = self._route(plan_id)
         if target is None:
-            self.p.log(f'ignore step for stale plan {plan_id}')
+            # reply(chat/none) 로 끝난 계획은 그 자리에서 IDLE 이 되므로, 뒤따라 오는 END 줄은
+            # 늘 여기로 온다. 정상이라 굳이 남기지 않는다.
+            if kind != KIND_END:
+                self.p.log(f'ignore step for stale plan {plan_id}')
             return
         if kind == KIND_REPLY:
             self.p.trace(T_REPLY, plan_id, -1, say, reply_kind)
@@ -169,12 +183,13 @@ class Executor:
                 self._status(S_IDLE)
             return
         if kind == KIND_ERROR:
+            say_text = self._error_say(detail)
             self.p.trace(T_NOTE, plan_id, -1, '계획을 만들지 못했습니다', detail)
             if target == 'pending':
                 self._pending = None
                 return
             if self.phase == 'PLANNING':                 # nothing started yet
-                self.p.say(planner.phrase(self.cfg, 'plan_error'))
+                self.p.say(say_text)
                 self._reset()
                 self._status(S_FAILED, detail)
             else:                                        # mid-plan: finish current step, then stop
@@ -328,8 +343,10 @@ class Executor:
         elif self.count >= 0 and nxt >= self.count:
             self.p.trace(T_PLAN_DONE, self.plan_id, -1, '완료', '')
             self._status(S_SUCCEEDED)
-            self._reset()
-            self._status(S_IDLE)
+            # 실행 중에 들어온 다음 발화가 대기하고 있으면 이어서 시작한다. _reset() 이
+            # _pending 을 지우므로 _finish_stop() 에 넘겨 승격시킨다 — 그렇게 하지 않으면
+            # "마지막 동작이 끝나기 직전에 말한 문장" 이 조용히 사라진다.
+            self._finish_stop()
         else:
             self._st, self._t = 'WAIT_STEP', self.p.now()
 
@@ -384,5 +401,13 @@ class Executor:
             if self.count >= 0:
                 self.p.trace(T_PLAN_END, self.plan_id, self.count, f'계획 {self.count}단계', '')
             self._dispatch(0)
+        elif pending:
+            # 계획이 아직 안 왔을 뿐, 사용자는 이미 말했다. 그 plan_id 로 계속 기다린다.
+            # 여기서 버리면 "앞 동작이 끝나기 직전에 말한 문장" 이 통째로 사라진다.
+            self.phase = 'PLANNING'
+            self.plan_id = pending['plan_id']
+            self.utterance = pending['utterance']
+            self.count = pending['count']
+            self._t = self.p.now()
         else:
             self._status(S_IDLE, '' if module_ok else 'module did not stop')

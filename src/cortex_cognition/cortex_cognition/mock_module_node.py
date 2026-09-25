@@ -21,7 +21,11 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from cortex_msgs.msg import SubtaskCmd, SubtaskState
 
-SUPPORTED = {'nav': {'move_to'}, 'vla': {'open', 'close', 'pick', 'place', 'handover'}}
+# actions.yaml 의 exec 와 같아야 한다 — 여기가 좁으면 계획이 중간에 "지원하지 않음" 으로 끊긴다.
+SUPPORTED = {
+    'nav': {'move_to'},
+    'vla': {'adjust', 'close', 'empty', 'fill', 'handover', 'insert', 'lock', 'open', 'pick', 'place', 'pour', 'put_in', 'receive', 'remove', 'take_out', 'turn_off', 'turn_on', 'unlock', 'wipe'},
+}
 
 
 class MockModuleNode(Node):
@@ -100,7 +104,7 @@ class MockModuleNode(Node):
                     self.detail = (self.detail + ' ' if self.detail else '') + 'cancelled_at_safe_point'
         msg = SubtaskState(plan_id=self.plan_id, index=self.index, action=self.action,
                            status=self.status, progress=float(self.progress), detail=self.detail)
-        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.stamp_ns = self.get_clock().now().nanoseconds
         self.pub.publish(msg)
         if self._final_left > 0:
             self._final_left -= 1

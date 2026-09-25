@@ -6,7 +6,9 @@
 #   FAILED   finished unsuccessfully — same 3x rule; `detail` says why
 # plan_id / index / action echo the SubtaskCmd being reported ("" / 0 / "" in IDLE).
 
-std_msgs/Header header
+# stamp_ns 는 발행 시각(epoch ns). 신선도(stale) 판정에 쓴다. VLA 의 IDL 과 같은 형태이며,
+# nav 도 Header 대신 이 필드로 맞추기로 했다 (2026-09 정합).
+int64 stamp_ns
 
 string plan_id
 uint16 index

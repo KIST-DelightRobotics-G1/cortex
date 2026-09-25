@@ -1,0 +1,86 @@
+# capabilities.yaml — 모듈이 실제로 할 수 있는 것. 오케스트레이터의 실행 가능성 검증기가 읽는다.
+# LLM 프롬프트에는 들어가지 않는다. 시연 환경이 바뀌면 이 파일만 바꾼다.
+# (나중에 nav / VLA 가 자기 능력을 토픽으로 광고하면 그것으로 대체)
+
+nav:
+  places: [home, fridge, table, counter, user]   # S1 시작위치 · S2 냉장고 · S3 테이블 + 조리대 · 사용자
+  # user = 사람 위치 (nav 가 해석). 목록 밖 장소 → phrases.unknown_place, 계획 중단
+  # 장소가 아닌 조작 대상 — move_to 가 나오면 그 줄만 건너뛰고 계획은 계속한다.
+  # 여기에 없고 places 에도 없으면 갈 수 없는 곳 → 차단하고 사용자에게 안내한다.
+  not_places: [door, front_door, room_door, bedroom_door, garage_door, veranda_door, balcony_door,
+               drawer, window, curtain, curtains, cupboard, cupboard_door, fridge_door,
+               trash_can, trash_bin, bin, outlet, socket, power_outlet, lock, padlock]
+
+vla:
+  actions: [open, close, pick, place, handover, take_out, put_in, receive, insert, remove,
+            turn_on, turn_off, adjust, pour, fill, empty, wipe, lock, unlock]
+  # 다룰 수 있는 물건. 비우면 검사하지 않는다 (VLA 런타임이 답함). 테스트용으로 넓게;
+  # 실기에서는 VLA 가 실제로 다루는 물건으로 좁힌다. 첫 인자(object/device/source/container)를 검사.
+  objects: [cucumber, tray, cup, apple, milk, water, water_bottle, bottle, water_glass, glass, spoon, key,
+            plug, cap, bottle_cap, lid, trash, garbage, trash_can, trash_bin, bin, remote_control, remote,
+            pillow, fridge, fridge_door, drawer, cupboard, cupboard_door, door, front_door, room_door,
+            bedroom_door, window, curtain, curtains, table, tv, light, lamp, lights, fan, air_conditioner,
+            ac, aircon, speaker, volume, tv_volume, kettle, pitcher, jug, dining_table, outlet, socket, power_outlet, sofa, desk]
+
+# 동의어 정규화 — LLM 이 낸 인자를 모듈 키로 바꾼다 (검증기2 가 판정 전에 적용).
+# 열린 어휘의 필연: 같은 물건을 refrigerator / fridge 로 다르게 부른다.
+aliases:
+  refrigerator: fridge
+  refrigerator_door: fridge_door
+  television: tv
+  couch: sofa
+  dining_table: table
+  kitchen_counter: counter
+  countertop: counter
+  me: user
+  home_position: home
+  home_base: home
+  charging_station: home
+  start_position: home
+  water_glass: cup
+  glass: cup
+  living_room_light: light
+  room_light: light
+  garbage: trash
+  garbage_can: trash_can
+  garbage_bin: trash_can
+  person: user
+  human: user
+  # LLM 이 같은 대상을 다르게 부른 것 — 의미는 같고 키만 다르다 (채점에서 LLM 책임으로 세지 않기 위해 정규화)
+  light_switch: light
+  lightswitch: light
+  switch: light
+  sound: volume
+  speaker_volume: volume
+  wall_outlet: outlet
+  power_socket: outlet
+  trash_bag: trash
+  garbage_bag: trash
+  water_cup: cup
+  rubber_duck: duck
+  pet_bowl: cat_bowl
+  pet_food: cat_food
+  kitchen_sink: sink
+
+# ---------------------------------------------------------------------------
+# 표시·실행용 이름표. 프롬프트에는 들어가지 않는다 (LLM 은 열린 어휘를 쓴다).
+#   korean  GUI 단계 제목 · TTS 안내 문구에 쓰는 한국어 이름
+#   english VLA instruction 템플릿에 채워 넣는 영어 이름
+# 목록에 없는 키는 인자 이름을 그대로 쓴다 (밑줄은 공백으로).
+
+korean:
+  fridge: 냉장고
+  fridge_door: 냉장고 문
+  cucumber: 오이
+  tray: 트레이
+  table: 테이블/식탁
+  counter: 조리대
+  user: 사용자/나/저
+  home: 홈/원위치/제자리
+
+# instruction 템플릿이 관사를 붙이므로("Pick up the {0}.") 여기에는 명사만 적는다.
+english:
+  fridge: refrigerator
+  fridge_door: refrigerator door
+  user: person
+  home: home position
