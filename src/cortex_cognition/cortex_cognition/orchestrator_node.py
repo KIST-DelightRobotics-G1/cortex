@@ -342,6 +342,12 @@ class OrchestratorNode(Node):
         self._epoch = int(time.time())
         self.stop_keywords = list(g('stop_keywords').value)
         self.plan_req_pub = self.create_publisher(PlanRequest, g('llm_request_topic').value, 10)
+        # 로봇이 기억하는 자기 상태. LLM 이 연속 발화를 풀려면 이 둘이 필요하다.
+        #   at       마지막으로 도착에 성공한 장소. 시작은 S1(home)
+        #   holding  지금 들고 있는 물건
+        # 모듈이 DONE/FAILED 를 줄 때만 바뀐다 — 명령을 보낸 시점이 아니라 결과를 보고 고친다.
+        self.at, self.holding = 'home', 'none'
+        self._sent: dict = {}          # exec -> (plan_id, index, action, args) 마지막으로 보낸 subtask
         # TRANSIENT_LOCAL so the warm-up burst reaches a tts_node that discovers
         # us late; drip-fed one per 50 ms so nothing overruns a history queue.
         latched = QoSProfile(depth=64, reliability=ReliabilityPolicy.RELIABLE,
@@ -398,8 +404,8 @@ class OrchestratorNode(Node):
         # 100 ms absence monitor (accept / stale / step timeouts); everything else is event-driven.
         self.create_timer(0.1, self._exec.tick, callback_group=grp)
         self.get_logger().info(
-            f'llm mode: {len([a for a, s in self.cfg["actions"].items() if s.get("enabled")])} '
-            f'actions, detector={g("detector_service").value}')
+            f'llm mode: {len(self.cfg["actions"])} actions, '
+            f'{len(self.cfg["nav"]["places"])} places, detector={g("detector_service").value}')
 
     def _warm_tts_cache(self) -> None:
         """Every fixed phrase / example say → tts prefetch, one per tick, starting 3 s after boot."""
@@ -418,7 +424,9 @@ class OrchestratorNode(Node):
                 texts.add(ln['say'])
             if 'reply' in ex:
                 texts.add(ex['reply']['say'])
-        keys = set(self.cfg['vocab'].get('object', [])) | set(self.cfg['vocab'].get('person', []))
+        # 어휘가 열려 있어 미리 데울 대상을 다 셀 수는 없다. 한국어 이름표가 있는 것 =
+        # 시연에서 실제로 나올 물건이므로 그만큼만 데운다. 나머지는 첫 호출 때 합성된다.
+        keys = set(self.cfg.get('korean', {}))
         for key in self.cfg.get('phrases', {}):
             if key in ('not_visible', 'step_failed', 'not_accepted'):
                 for k in keys:
@@ -443,7 +451,8 @@ class OrchestratorNode(Node):
             return
         plan_id = self._new_plan_id()
         state = self._exec.heard(plan_id, text)
-        self.plan_req_pub.publish(PlanRequest(plan_id=plan_id, utterance=text, state=state))
+        self.plan_req_pub.publish(PlanRequest(plan_id=plan_id, utterance=text, state=state,
+                                             at=self.at, holding=self.holding))
         if self.ack_phrase and not state.startswith('running'):
             self._say(self.ack_phrase)                      # fills the LLM think time
 
@@ -454,7 +463,32 @@ class OrchestratorNode(Node):
                            m.reply_kind, m.detail)
 
     def _on_module_state(self, which: str, m: SubtaskState) -> None:
+        if m.status in (SubtaskState.DONE, SubtaskState.FAILED):
+            self._update_robot_state(which, m)
         self._exec.on_state(which, m.status, m.plan_id, m.index, m.detail, m.progress)
+
+    # 회복 규칙: 성공하면 그대로 반영하고, 실패하면 "모른다"로 되돌린다. 다음 계획이 이동이나
+    # 집기를 다시 넣어 스스로 회복한다. 놓기에 실패하면 물건은 아직 손에 있으므로 유지한다.
+    _PICKS = ('pick', 'take_out', 'receive')
+    _PUTS = ('place', 'put_in', 'handover')
+
+    def _update_robot_state(self, which: str, m: SubtaskState) -> None:
+        sent = self._sent.get(which)
+        if not sent or sent[0] != m.plan_id or sent[1] != m.index:
+            return                                   # 내가 보낸 그 subtask 의 결과가 아니다
+        _, _, action, args = sent
+        before = (self.at, self.holding)
+        done = m.status == SubtaskState.DONE
+        if action == 'move_to':
+            self.at = args[0] if done else 'unknown'
+        elif action in self._PICKS:
+            self.holding = args[0] if done else 'none'
+        elif action in self._PUTS and done:
+            self.holding = 'none'
+        else:
+            return
+        if (self.at, self.holding) != before:      # DONE 은 3회 반복되므로 바뀔 때만 남긴다
+            self.get_logger().info(f'robot state: at={self.at} holding={self.holding}')
 
     # --- ports --------------------------------------------------------------
     def _say(self, text: str) -> None:
@@ -462,10 +496,10 @@ class OrchestratorNode(Node):
             self.say_pub.publish(ActionCmd(text=text))
 
     def _send_cmd(self, which: str, step, plan_id: str) -> None:
-        msg = SubtaskCmd(plan_id=plan_id, index=step.index, action=step.action,
-                         args=list(step.args), instruction=step.instruction, cancel=False)
-        msg.header.stamp = self.get_clock().now().to_msg()
-        self.cmd_pub[which].publish(msg)
+        self._sent[which] = (plan_id, step.index, step.action, list(step.args))
+        self.cmd_pub[which].publish(
+            SubtaskCmd(plan_id=plan_id, index=step.index, action=step.action,
+                       args=list(step.args), instruction=step.instruction, cancel=False))
 
     def _send_cancel(self, which: str, plan_id: str, index: int) -> None:
         msg = SubtaskCmd(plan_id=plan_id, index=index, cancel=True)
