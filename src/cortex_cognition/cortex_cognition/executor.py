@@ -184,7 +184,7 @@ class Executor:
             return
         if kind == KIND_ERROR:
             say_text = self._error_say(detail)
-            self.p.trace(T_NOTE, plan_id, -1, '계획을 만들지 못했습니다', detail)
+            self.p.trace(T_NOTE, plan_id, -1, say_text, detail)
             if target == 'pending':
                 self._pending = None
                 return
