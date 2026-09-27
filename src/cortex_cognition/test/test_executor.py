@@ -219,6 +219,16 @@ def test_validation_error_mid_plan_finishes_vla_step_then_stops():
     assert h.x.phase == 'IDLE' and len(h.cmds) == 2
 
 
+def test_validation_error_shows_the_spoken_sentence():
+    """막힌 이유가 화면에도 그대로 간다. 안내 문구는 actions.yaml 에서 온다."""
+    h = Harness()
+    h.x.heard('p1', '화장실로 가')
+    h.x.on_step('p1', ERROR, 0, '', [], '', '', 'unknown_place|bathroom')
+    said = planner.phrase(CFG, 'unknown_place', 'bathroom')
+    assert h.says[-1] == said
+    assert (ex.T_NOTE, -1, said) in h.traces
+
+
 def test_plan_stall_times_out():
     h = Harness()
     h.x.heard('p1', 'x')
