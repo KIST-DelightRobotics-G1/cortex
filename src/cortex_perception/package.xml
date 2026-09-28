@@ -20,6 +20,7 @@
   <depend>sensor_msgs</depend>
   <depend>g1_onboard_msgs</depend>
   <depend>cortex_msgs</depend>
+  <depend>kist_msgs</depend>
 
   <test_depend>python3-pytest</test_depend>
 

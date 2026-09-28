@@ -5,7 +5,7 @@ a short window of results, so a "is X visible?" question is answered from the
 window in a few ms instead of starting an inference on demand and flickering on
 a single frame.
 
-    camera (CompressedImage | Image) ──> YOLO @ rate_hz ──> ring buffer (window_s)
+    camera (H.264 | CompressedImage | Image) ──> YOLO @ rate_hz ──> ring buffer (window_s)
                                                           ├─> DetectionArray  (/cortex/detections, debug/GUI)
                                                           └─> CheckTarget srv (/cortex/detector/check)
 
@@ -32,20 +32,22 @@ import time
 
 import numpy as np
 import rclpy
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, Image
 
 from cortex_msgs.msg import Detection, DetectionArray
 from cortex_msgs.srv import CheckTarget
+from kist_msgs.msg import CompressedColorFrame
 
 
 class DetectorNode(Node):
     def __init__(self) -> None:
         super().__init__('detector_node')
-        self.declare_parameter('camera_topic', '/bridge/sensors/camera/color/compressed')
-        self.declare_parameter('camera_transport', 'compressed')   # compressed | raw
+        self.declare_parameter('camera_topic', '/kist/camera/head/color/h264')
+        self.declare_parameter('camera_transport', 'h264')   # h264 (ext-sensor-io) | compressed | raw
         self.declare_parameter('detections_topic', '/cortex/detections')
         self.declare_parameter('service', '/cortex/detector/check')
         self.declare_parameter('backend', 'always')   # always (stub) | yolo
@@ -81,11 +83,19 @@ class DetectorNode(Node):
 
         grp = ReentrantCallbackGroup()
         self.det_pub = self.create_publisher(DetectionArray, g('detections_topic').value, 10)
-        if g('camera_transport').value == 'raw':
-            self.create_subscription(Image, g('camera_topic').value, self._on_raw, 1, callback_group=grp)
+        transport, topic = g('camera_transport').value, g('camera_topic').value
+        if self.backend == 'always':
+            pass                                 # the stub never looks at a frame — skip decoding
+        elif transport == 'h264':
+            from .ext_sensor import H264Decoder
+            self._decoder = H264Decoder()
+            # one decoder, one stream: its callbacks must not overlap
+            self.create_subscription(CompressedColorFrame, topic, self._on_h264, qos_profile_sensor_data,
+                                     callback_group=MutuallyExclusiveCallbackGroup())
+        elif transport == 'raw':
+            self.create_subscription(Image, topic, self._on_raw, 1, callback_group=grp)
         else:
-            self.create_subscription(CompressedImage, g('camera_topic').value, self._on_compressed, 1,
-                                     callback_group=grp)
+            self.create_subscription(CompressedImage, topic, self._on_compressed, 1, callback_group=grp)
         self.create_service(CheckTarget, g('service').value, self._on_check, callback_group=grp)
         self.create_timer(1.0 / float(g('rate_hz').value), self._infer, callback_group=grp)
         self.get_logger().info(
@@ -105,6 +115,12 @@ class DetectorNode(Node):
             self._model = None
 
     # --- camera -----------------------------------------------------------
+    def _on_h264(self, m: CompressedColorFrame) -> None:
+        frame = self._decoder.decode(m.data, m.is_keyframe)
+        if frame is not None:
+            with self._lock:
+                self._frame, self._frame_t = frame.to_ndarray(format='bgr24'), time.monotonic()
+
     def _on_compressed(self, m: CompressedImage) -> None:
         try:
             import cv2

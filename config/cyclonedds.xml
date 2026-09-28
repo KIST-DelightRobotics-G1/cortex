@@ -4,8 +4,9 @@
             xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
 
   <!--
-    Bridge domain shared with the NX onboard stack (Domain Id=1).
-    Must stay in sync with kist-drl-g1-onboard/config/cyclonedds.xml.
+    Domain 0: the robot's domain, shared with ext-sensor-io, gearsonic,
+    navigation-planner and vla-inference. (Domain 1 was the bridge to the
+    onboard stack, which is no longer used.)
 
     Unicast-only peer discovery: multicast is off, the NX is listed as an
     explicit peer. DDS_PEER_IP must resolve to the NX before launch (see env.sh).
@@ -13,7 +14,7 @@
     TODO(REQ-XX): confirm the PC NIC name below on the demo machine
     (`ip -br link`). It is host-specific and NOT portable.
   -->
-  <Domain Id="1">
+  <Domain Id="0">
     <General>
       <Interfaces>
         <!-- PC NIC facing the robot LAN. Change to match the demo machine. -->

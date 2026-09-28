@@ -80,7 +80,7 @@ sudo apt-get update && sudo apt-get install -y \
 # Shared interfaces submodule
 git submodule update --init --recursive
 
-# Repo-local activation (ROS + CycloneDDS + bridge domain)
+# Repo-local activation (ROS + CycloneDDS + domain 0)
 source env.sh
 
 # Deps
@@ -131,7 +131,7 @@ docker/run.sh ros2 launch cortex_bringup llm_demo.launch.py backend:=gemini spee
 
 - Credentials come from `.env` (`--env-file`, never baked in). Use
   `GOOGLE_APPLICATION_CREDENTIALS_B64`; a host file path does not exist in the container.
-- `--network host`, `ROS_DOMAIN_ID=1`, `DDS_PEER_IP` as in `env.sh`. The NIC name in
+- `--network host`, `ROS_DOMAIN_ID=0`, `DDS_PEER_IP` as in `env.sh`. The NIC name in
   `config/cyclonedds.xml` (`eno2`) must still match the host.
 - The TTS cache lives on the host (`~/.cache/cortex_tts`) and survives rebuilds.
 - Not in this image: detector_node's YOLO backend (runs as the `always` stub) and the
@@ -143,13 +143,20 @@ docker/run.sh ros2 launch cortex_bringup llm_demo.launch.py backend:=gemini spee
 
 ## DDS / domain
 
-`env.sh` sets `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`, `ROS_DOMAIN_ID=1` (the **bridge**
-domain shared with onboard) and points `DDS_PEER_IP` at the NX. `config/cyclonedds.xml`
-mirrors the onboard bridge-domain config (unicast peers, `AllowMulticast=false`).
+`env.sh` sets `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`, `ROS_DOMAIN_ID=0` and points
+`DDS_PEER_IP` at the NX. `config/cyclonedds.xml` uses unicast peers (`AllowMulticast=false`)
+and no `lo` interface (with a second interface Cyclone sends discovery from a loopback
+socket and floods the log with `retcode -3`).
 
-⚠️ Onboard isolates `/onboard/*` from `/bridge/*` via **separate DDS domains**, previously
-bridged by `comm_bridge`. With `comm_bridge` deleted, onboard producers must publish directly
-on the bridge domain. Keep both `cyclonedds.xml` files and `ROS_DOMAIN_ID` in sync.
+Domain 0 is shared with ext-sensor-io, gearsonic, navigation-planner and vla-inference.
+Those modules speak plain DDS, not ROS, so the type names on the wire must be the ROS
+form (`pkg::msg::dds_::Name_`) for cortex to read them — ext-sensor-io's mic and camera
+types match `src/kist_msgs`, and the subtask contract matches `cortex_msgs`.
+
+| From ext-sensor-io | cortex reads it as | Used by |
+|---|---|---|
+| `rt/kist/mic/array/audio` | `/kist/mic/array/audio` · `kist_msgs/AudioChunk` (16 kHz × 6, channel 0 used) | stt_node |
+| `rt/kist/camera/head/color/h264` | `/kist/camera/head/color/h264` · `kist_msgs/CompressedColorFrame` (decoded with PyAV) | gui_bridge_node, detector_node |
 
 ---
 

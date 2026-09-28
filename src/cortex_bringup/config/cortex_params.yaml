@@ -1,12 +1,13 @@
 # Shared parameters for the cortex node graph.
-# Topic names on /bridge/* must match what the onboard stack publishes on the
-# shared DDS bridge domain (post-comm_bridge redesign).
+# DDS domain 0, shared with ext-sensor-io, gearsonic, navigation-planner and
+# vla-inference. Mic and camera come straight from ext-sensor-io (kist_msgs).
 
 stt_node:
   ros__parameters:
-    # /bridge/* names follow the ICD; kist-ext-sensor-io owns the publisher.
-    # If that repo lands on different names, change them here — not in code.
-    audio_topic: /bridge/sensors/audio_pcm
+    # ext-sensor-io mic (kist_msgs/AudioChunk, interleaved S16_LE). The reSpeaker
+    # XVF3800 array is 16 kHz x 6: channel 0 is its processed (beamformed) output.
+    audio_topic: /kist/mic/array/audio
+    mic_channel: 0
     speaker_state_topic: /bridge/audio/speaker_state   # comm_bridge outbound (was /bridge/sensors/* — mismatch)
     transcript_topic: /cortex/stt/transcript
     backend: google_cloud        # google_cloud (v1) | google_cloud_v2 | dummy (no credentials)
@@ -19,7 +20,7 @@ stt_node:
     location: global             # v2 endpoint region; chirp_3 is not served everywhere (try us-central1)
     speech_end_timeout_s: 0.5    # v2: flush the final result this long after speech stops (0 = server default)
     language_code: ko-KR
-    sample_rate_hz: 16000        # AudioPCM locked format
+    sample_rate_hz: 16000        # STT input rate; mic chunks are resampled to it
     interim_results: false       # false = publish only is_final transcripts
     highpass_hz: 120.0           # removes low-freq vibration / DC
     lowpass_hz: 5500.0           # preserves Korean fricatives (ㅅ/ㅎ/ㅊ)
@@ -99,8 +100,8 @@ llm_node:
 
 detector_node:
   ros__parameters:
-    camera_topic: /bridge/sensors/camera/color/compressed
-    camera_transport: compressed         # compressed | raw
+    camera_topic: /kist/camera/head/color/h264   # ext-sensor-io; not read while backend is always
+    camera_transport: h264               # h264 | compressed | raw
     detections_topic: /cortex/detections
     service: /cortex/detector/check
     backend: always                      # always = STUB (every target found) | yolo
@@ -120,8 +121,8 @@ gui_bridge_node:
     # ROS -> WebSocket egress to the display renderer (kist-drl-g1-gui, REQ-41).
     # Point the renderer at ws://<this-host>:8081 (its ?ws= query param).
     status_topic: /cortex/task_status
-    camera_topic: /bridge/sensors/camera/color/compressed
-    camera_transport: compressed   # compressed (forward JPEG) | raw (encode) | none
+    camera_topic: /kist/camera/head/color/h264
+    camera_transport: h264         # h264 (decode -> JPEG) | compressed (forward JPEG) | raw | none
     ws_host: 0.0.0.0
     ws_port: 8081                   # GUIBackground default — must match renderer
     stream_rate_hz: 15.0
