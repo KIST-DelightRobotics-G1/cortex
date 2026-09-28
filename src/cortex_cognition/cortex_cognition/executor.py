@@ -7,14 +7,25 @@ state machine unit-testable with a fake clock.
 Contract implemented: Subtask_state_interface_spec v0.1
     accept_timeout_s 0.5 (+1 resend) · stale_s 1.0 · step_timeout nav 60 / vla 30
     step_wait_s 5 (next PlanStep) · cancel_ack_s 0.5 · safe_stop nav 3 / vla 10
-    cancel: nav → immediately; vla → deferred until DONE/FAILED (safe point)
+    idle_wait_s 1 (DONE → IDLE)
     IDLE from a module means "cleanup complete, ready for a new Cmd"
+
+Two rules keep every module handled the same way:
+    1. The next Cmd goes out only after the module that ran the previous step
+       reports IDLE, not at its first DONE. nav and VLA both drive the body
+       through gearsonic; IDLE is "I have let go", DONE is only "I got there".
+    2. Every stop (user "stop", preemption by a new plan, step timeout) sends a
+       cancel and waits for IDLE. Whether to defer to a safe point is the
+       module's call (appendix A: cancel_deferred / cancelled_at_safe_point).
+       If the module does not reach IDLE in time, no new plan is started.
+    The one graceful stop is a plan error mid-plan: the running step finishes
+    (bounded by its step timeout, then cancelled) and nothing after it starts.
 
 Phases
     IDLE       nothing running
     PLANNING   PlanRequest sent, waiting for the first PlanStep (or a reply)
-    RUNNING    a step is dispatched (sub-state in `_st`: ACCEPT | RUN | WAIT_STEP)
-    STOPPING   cancel sent / deferred; waiting for the module to reach IDLE
+    RUNNING    a step is dispatched (sub-state in `_st`: ACCEPT | RUN | WAIT_IDLE | WAIT_STEP)
+    STOPPING   cancel sent (or the step is allowed to finish); waiting for the module's IDLE
     CONFIRM    a confirm question is pending — next utterance answers it
 """
 
@@ -44,6 +55,7 @@ class Params:
     stale_s: float = 1.0
     step_timeout_s: dict = field(default_factory=lambda: {'nav': 60.0, 'vla': 30.0})
     step_wait_s: float = 5.0
+    idle_wait_s: float = 1.0              # DONE → IDLE (DONE is repeated 3x at 10 Hz, ~0.3 s)
     cancel_ack_s: float = 0.5
     safe_stop_timeout_s: dict = field(default_factory=lambda: {'nav': 3.0, 'vla': 10.0})
     plan_timeout_s: float = 20.0          # PlanRequest → first line
@@ -102,9 +114,12 @@ class Executor:
         self.steps: dict[int, Step] = {}
         self.count = -1                 # from END; -1 until known
         self.cur = -1                   # current step index
-        self._st = ''                   # ACCEPT | RUN | WAIT_STEP
+        self._st = ''                   # ACCEPT | RUN | WAIT_IDLE | WAIT_STEP
         self._t = 0.0                   # timestamp of the current sub-state entry
         self._retries = 0
+        self._busy_seen = False         # module reported the current step as non-IDLE
+        self._final_traced = False      # STEP_DONE / STEP_FAILED already shown for the current step
+        self._stop_mode = ''            # STOPPING: 'cancel' (cancel sent) | 'finish' (let the step end)
         self._pending: Optional[dict] = None   # plan waiting to start after a stop
         self._stop_reason = ''
         self._confirm_summary = ''
@@ -193,7 +208,7 @@ class Executor:
                 self._reset()
                 self._status(S_FAILED, detail)
             else:                                        # mid-plan: finish current step, then stop
-                self._begin_stop('plan_error: ' + detail)
+                self._begin_stop('plan_error: ' + detail, cancel=False)
             return
         if kind == KIND_END:
             if target == 'pending':
@@ -232,7 +247,13 @@ class Executor:
         if st is None or st.exec != exec:
             return
         mine = (plan_id == self.plan_id and index == st.index)
+        if mine and status != IDLE:
+            self._busy_seen = True
         if self.phase == 'RUNNING':
+            if self._st == 'WAIT_IDLE':
+                if status == IDLE:                       # rule 1: the module let go → next step
+                    self._advance()
+                return
             if not mine:
                 return
             if status == RUNNING and self._st == 'ACCEPT':
@@ -240,16 +261,19 @@ class Executor:
                 self._status(S_RUNNING)
             elif status == DONE and self._st in ('ACCEPT', 'RUN'):
                 self.p.trace(T_STEP_DONE, self.plan_id, st.index, st.title, '')
-                self._advance()
+                self._final_traced = True
+                self._st, self._t = 'WAIT_IDLE', self.p.now()
             elif status == FAILED and self._st in ('ACCEPT', 'RUN'):
                 self._fail_step(detail or 'failed')
         elif self.phase == 'STOPPING':
-            if status == IDLE:                           # cleanup complete
+            if status == IDLE and self._module_settled():
                 self._finish_stop()
-            elif mine and status in (DONE, FAILED) and self._stop_deferred:
-                # vla reached its safe point; it goes IDLE by itself after 3 reports
+            elif mine and status in (DONE, FAILED) and not self._final_traced:
+                # the step ended before the IDLE: at its safe point, or on its own
+                # (graceful stop). Shown once — DONE / FAILED repeat 3x.
                 self.p.trace(T_STEP_DONE if status == DONE else T_STEP_FAILED,
-                             self.plan_id, st.index, st.title, 'cancelled_at_safe_point')
+                             self.plan_id, st.index, st.title, detail)
+                self._final_traced = True
 
     def stop(self, reason: str = 'user') -> None:
         """User said stop. Cancels whatever is running; pending plan is dropped."""
@@ -257,7 +281,12 @@ class Executor:
         self._pending = None
         if self.phase == 'IDLE':
             return
-        if self.phase == 'STOPPING':                     # already stopping; just drop the pending plan
+        if self.phase == 'STOPPING':                     # already stopping; drop the pending plan
+            st = self._cur()
+            if self._stop_mode == 'finish' and st is not None:
+                # the step was being allowed to finish — "stop" means now
+                self.p.say(planner.phrase(self.cfg, 'stopped'))
+                self._send_cancel(st, reason)
             return
         if self.phase in ('PLANNING', 'CONFIRM'):
             self.p.trace(T_CANCEL, self.plan_id, -1, '중단', reason)
@@ -292,17 +321,21 @@ class Executor:
                 if m.t_recv >= 0 and now - m.t_recv > self.prm.stale_s:
                     self._fail_step('module lost', say_key='module_lost')
                 elif now - self._t > self.prm.step_timeout_s.get(st.exec, 30.0):
-                    self.p.send_cancel(st.exec, self.plan_id, st.index)
-                    self._fail_step('timeout')
+                    self._fail_step('timeout', cancel=True)
+            elif self._st == 'WAIT_IDLE':
+                if now - self._t > self.prm.idle_wait_s:
+                    self._fail_step('did not go idle', say_key='module_lost')
             elif self._st == 'WAIT_STEP':
                 if now - self._t > self.prm.step_wait_s:
                     self.p.say(planner.phrase(self.cfg, 'plan_error'))
                     self._abandon('plan stalled')
         elif self.phase == 'STOPPING' and st is not None:
-            limit = self.prm.safe_stop_timeout_s.get(st.exec, 10.0)
-            if self._stop_deferred:
-                limit = self.prm.step_timeout_s.get(st.exec, 30.0)
-            if now - self._t > limit:
+            if self._stop_mode == 'finish':
+                # graceful stop, but not forever: past the step timeout, cancel it
+                if now - self._t > self.prm.step_timeout_s.get(st.exec, 30.0):
+                    self._send_cancel(st, 'timeout')
+                return
+            if now - self._t > self.prm.safe_stop_timeout_s.get(st.exec, 10.0):
                 self.p.trace(T_NOTE, self.plan_id, st.index, '모듈이 멈추지 않음', '')
                 self._finish_stop(module_ok=False)
 
@@ -331,6 +364,7 @@ class Executor:
                 self._abandon(f'precheck: {target} not visible')
                 return
         self._st, self._t, self._retries = 'ACCEPT', self.p.now(), 0
+        self._busy_seen = self._final_traced = False
         self.p.send_cmd(st.exec, st, self.plan_id)
         self.p.say(st.say)
         self.p.trace(T_STEP_START, self.plan_id, index, st.say, '')
@@ -350,12 +384,19 @@ class Executor:
         else:
             self._st, self._t = 'WAIT_STEP', self.p.now()
 
-    def _fail_step(self, reason: str, say_key: str = 'step_failed') -> None:
+    def _fail_step(self, reason: str, say_key: str = 'step_failed', cancel: bool = False) -> None:
         st = self._cur()
         self.p.trace(T_STEP_FAILED, self.plan_id, st.index, reason, '')
+        self._final_traced = True
         subject = {'nav': '이동', 'vla': '조작'}[st.exec] if say_key == 'module_lost' else st.title
         self.p.say(planner.phrase(self.cfg, say_key, subject))
-        self._abandon(reason)
+        if cancel:
+            # rule 2: the module is still acting — cancel it and see it reach IDLE
+            # before anything else runs (a pending utterance is dropped with the plan)
+            self.p.trace(T_CANCEL, self.plan_id, -1, '계획 중단', reason)
+            self._begin_stop(reason, state=S_FAILED, trace=False)
+        else:
+            self._abandon(reason)
 
     def _abandon(self, reason: str) -> None:
         self.p.trace(T_CANCEL, self.plan_id, -1, '계획 중단', reason)
@@ -363,32 +404,55 @@ class Executor:
         self._reset()
         self._status(S_IDLE)
 
-    @property
-    def _stop_deferred(self) -> bool:
-        st = self._cur()
-        return st is not None and st.exec == 'vla'
+    def _module_settled(self) -> bool:
+        """Is an IDLE seen now really the stop's result?
 
-    def _begin_stop(self, reason: str, keep_pending: bool = False) -> None:
+        If the module never reported the current step (the Cmd may still be in
+        flight), an IDLE could predate it. Trust it only after cancel_ack_s."""
+        return self._busy_seen or self.p.now() - self._t >= self.prm.cancel_ack_s
+
+    def _send_cancel(self, st: Step, reason: str, trace: bool = True) -> None:
+        self._stop_mode, self._t = 'cancel', self.p.now()
+        self.p.send_cancel(st.exec, self.plan_id, st.index)
+        if trace:
+            title = '이동 취소' if st.exec == 'nav' else '동작 취소'
+            self.p.trace(T_CANCEL, self.plan_id, st.index, title, reason)
+
+    def _begin_stop(self, reason: str, keep_pending: bool = False, cancel: bool = True,
+                    state: int = S_PREEMPTED, trace: bool = True) -> None:
         if not keep_pending:
             self._pending = None
         st = self._cur()
         self._stop_reason = reason
+        between_steps = self._st in ('WAIT_STEP', 'WAIT_IDLE')
+        if trace and between_steps and self.phase == 'RUNNING':
+            # nothing to cancel, but the screen still has to show the stop
+            self.p.trace(T_CANCEL, self.plan_id, -1, '다음 단계 전에 중단', reason)
         if st is None or self._st == 'WAIT_STEP' or self.phase != 'RUNNING':
-            self._finish_stop()
+            self._finish_stop()                          # nothing is moving
             return
         self.phase = 'STOPPING'
         self._t = self.p.now()
-        if st.exec == 'nav':
-            self.p.send_cancel('nav', self.plan_id, st.index)
-            self.p.trace(T_CANCEL, self.plan_id, st.index, '이동 취소', reason)
+        if self._st == 'WAIT_IDLE':                      # step already over; only its IDLE is missing
+            self._stop_mode = 'cancel'
+        elif cancel:
+            self._send_cancel(st, reason, trace)
         else:
-            self.p.trace(T_CANCEL, self.plan_id, st.index, '현재 동작 완료 후 중단', reason)
-        self._status(S_PREEMPTED, reason)
+            self._stop_mode = 'finish'
+            if trace:
+                self.p.trace(T_CANCEL, self.plan_id, st.index, '현재 동작 완료 후 중단', reason)
+        self._status(state, reason)
 
     def _finish_stop(self, module_ok: bool = True) -> None:
         pending = self._pending
         self._pending = None
         self._reset()
+        if not module_ok:
+            # rule 2: the module may still be moving — start nothing new on top of it
+            self.p.say(planner.phrase(self.cfg, 'stop_failed'))
+            self._status(S_FAILED, 'module did not stop')
+            self._status(S_IDLE)
+            return
         if pending and pending.get('steps'):
             self.phase = 'RUNNING'
             self.plan_id = pending['plan_id']
@@ -410,4 +474,4 @@ class Executor:
             self.count = pending['count']
             self._t = self.p.now()
         else:
-            self._status(S_IDLE, '' if module_ok else 'module did not stop')
+            self._status(S_IDLE)
