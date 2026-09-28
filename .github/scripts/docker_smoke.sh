@@ -8,7 +8,9 @@ sleep 10
 
 timeout 70 ros2 topic echo /cortex/trace cortex_msgs/msg/TraceEvent > /tmp/trace.log 2>&1 &
 sleep 3
-ros2 topic pub -1 /cortex/stt/transcript std_msgs/msg/String "{data: '냉장고에서 오이 가져다줘'}"
+# The dummy LLM only replays actions.yaml's few-shot examples; this one is four
+# VLA steps with no move_to, so every argument passes the capability check.
+ros2 topic pub -1 /cortex/stt/transcript std_msgs/msg/String "{data: '이 컵 찬장에 넣어줘'}"
 
 # kind 10 = PLAN_DONE
 for _ in $(seq 1 60); do
