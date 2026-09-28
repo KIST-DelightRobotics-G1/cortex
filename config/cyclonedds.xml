@@ -18,7 +18,10 @@
       <Interfaces>
         <!-- PC NIC facing the robot LAN. Change to match the demo machine. -->
         <NetworkInterface name="eno2" priority="default" multicast="false"/>
-        <NetworkInterface name="lo"   priority="default" multicast="false"/>
+        <!-- No "lo" here: with a second interface Cyclone also sends discovery to
+             DDS_PEER_IP from a 127.0.0.1-bound socket, which the kernel refuses
+             (ddsi_udp_conn_write ... retcode -3, ~20 lines per node per cycle).
+             Nodes on this host still find each other through the localhost peer. -->
       </Interfaces>
       <AllowMulticast>false</AllowMulticast>
       <MaxMessageSize>65500B</MaxMessageSize>

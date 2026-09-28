@@ -43,12 +43,12 @@ from typing import Any, Optional
 import numpy as np
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from scipy.signal import butter, sosfilt
 from std_msgs.msg import String
 
-from g1_onboard_msgs.msg import AudioPCM, EstopFlag, SpeakerState
+from g1_onboard_msgs.msg import AudioPCM, SpeakerState
 
 _MAX_RECONNECT = 10
 
@@ -177,7 +177,6 @@ class SttNode(Node):
         self.declare_parameter('audio_topic', '/bridge/sensors/audio_pcm')
         self.declare_parameter('transcript_topic', '/cortex/stt/transcript')
         self.declare_parameter('speaker_state_topic', '/bridge/audio/speaker_state')
-        self.declare_parameter('estop_topic', '/bridge/safety/estop')
         self.declare_parameter('backend', STTBackend.GOOGLE_CLOUD.value)
         self.declare_parameter('language_code', 'ko-KR')
         self.declare_parameter('sample_rate_hz', 16000)
@@ -209,7 +208,6 @@ class SttNode(Node):
 
         # --- state ---------------------------------------------------------
         self._state = STTState.IDLE      # running == (state != IDLE)
-        self._estop_active: bool = False
         self._speaker_playing: bool = False   # cached from SpeakerState
         self._echo_tail_end: Optional[float] = None   # monotonic tail deadline
         self._lead_mute_end: Optional[float] = None   # monotonic lead deadline
@@ -233,8 +231,6 @@ class SttNode(Node):
         self.create_subscription(
             SpeakerState, g('speaker_state_topic').value, self._on_speaker_state, 10,
             callback_group=grp)
-        self.create_subscription(
-            EstopFlag, g('estop_topic').value, self._on_estop_msg, 10, callback_group=grp)
 
         self._start_backend()
         self.get_logger().info(
@@ -288,11 +284,6 @@ class SttNode(Node):
     def _on_speaker_state(self, msg: SpeakerState) -> None:
         self._speaker_playing = bool(msg.playing)
 
-    def _on_estop_msg(self, msg: EstopFlag) -> None:
-        self._estop_active = bool(msg.active)
-        self.get_logger().info(
-            f"E-STOP {'ACTIVE' if self._estop_active else 'CLEARED'} (reason={msg.reason})")
-
     def _on_audio_msg(self, msg: AudioPCM) -> None:
         """AudioPCM -> the provider's chunk path. ts is monotonic-at-receipt so it
         is comparable with the echo-mute deadlines."""
@@ -300,12 +291,8 @@ class SttNode(Node):
 
     # --- audio path (ported unchanged) ------------------------------------
     def _on_audio_chunk(self, pcm: bytes, ts: float) -> None:
-        """Drop while E-STOP or echo-muted; forward to backend queue otherwise."""
-        # 1) E-STOP gate — hard block; no silence injection needed
-        if self._estop_active:
-            return
-
-        # 2) Echo-cancel gate (speaker playing + tail-off + leading edge)
+        """Drop while echo-muted; forward to backend queue otherwise."""
+        # Echo-cancel gate (speaker playing + tail-off + leading edge)
         if self._check_echo_mute(ts):
             # Inject silence of identical length so Google's idle timeout does
             # not terminate the stream during long TTS playback.
@@ -634,11 +621,12 @@ def main(args=None) -> None:
     executor.add_node(node)
     try:
         executor.spin()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():                  # launch's SIGINT may have shut the context down already
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

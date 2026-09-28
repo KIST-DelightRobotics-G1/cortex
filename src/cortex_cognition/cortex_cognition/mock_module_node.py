@@ -16,6 +16,7 @@ Parameters
 """
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
@@ -120,11 +121,12 @@ def main(args=None) -> None:
     node = MockModuleNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():                  # launch's SIGINT may have shut the context down already
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
