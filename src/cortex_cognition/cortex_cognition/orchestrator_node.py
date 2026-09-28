@@ -277,6 +277,7 @@ class OrchestratorNode(Node):
         self.declare_parameter('step_timeout_nav_s', 60.0)
         self.declare_parameter('step_timeout_vla_s', 30.0)
         self.declare_parameter('step_wait_s', 5.0)
+        self.declare_parameter('idle_wait_s', 1.0)
         self.declare_parameter('safe_stop_nav_s', 3.0)
         self.declare_parameter('safe_stop_vla_s', 10.0)
         self.declare_parameter('plan_timeout_s', 20.0)
@@ -384,6 +385,7 @@ class OrchestratorNode(Node):
             step_timeout_s={'nav': float(g('step_timeout_nav_s').value),
                             'vla': float(g('step_timeout_vla_s').value)},
             step_wait_s=float(g('step_wait_s').value),
+            idle_wait_s=float(g('idle_wait_s').value),
             safe_stop_timeout_s={'nav': float(g('safe_stop_nav_s').value),
                                  'vla': float(g('safe_stop_vla_s').value)},
             plan_timeout_s=float(g('plan_timeout_s').value),
@@ -502,9 +504,7 @@ class OrchestratorNode(Node):
                        args=list(step.args), instruction=step.instruction, cancel=False))
 
     def _send_cancel(self, which: str, plan_id: str, index: int) -> None:
-        msg = SubtaskCmd(plan_id=plan_id, index=index, cancel=True)
-        msg.header.stamp = self.get_clock().now().to_msg()
-        self.cmd_pub[which].publish(msg)
+        self.cmd_pub[which].publish(SubtaskCmd(plan_id=plan_id, index=index, cancel=True))
 
     def _check_target(self, target: str):
         """Synchronous detector query -> (found, detail). A non-empty detail with

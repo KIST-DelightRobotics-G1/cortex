@@ -76,7 +76,8 @@ orchestrator_node:
     step_timeout_nav_s: 60.0
     step_timeout_vla_s: 30.0
     step_wait_s: 5.0                    # step done but next PlanStep not here yet
-    safe_stop_nav_s: 3.0                # cancel -> IDLE
+    idle_wait_s: 1.0                    # DONE -> IDLE before the next Cmd goes out
+    safe_stop_nav_s: 3.0                # cancel -> IDLE (then no new plan starts)
     safe_stop_vla_s: 10.0
     plan_timeout_s: 20.0                # PlanRequest -> first line
     # detector unavailable (no node / timeout / stale frame) -> proceed; only a real

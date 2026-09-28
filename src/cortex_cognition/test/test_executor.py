@@ -56,10 +56,13 @@ CUCUMBER = [('move_to', ['fridge']), ('open', ['fridge_door']), ('pick', ['cucum
 
 
 def run_step(h, which, pid, i):
-    """module accepts and completes the current step"""
+    """module accepts and completes the current step: RUNNING → DONE x3 → IDLE"""
     h.state(which, ex.RUNNING, pid, i)
     h.advance(0.5)
-    h.state(which, ex.DONE, pid, i)
+    for _ in range(3):
+        h.state(which, ex.DONE, pid, i)
+        h.advance(0.1)
+    h.state(which, ex.IDLE, '', 0)
 
 
 def test_happy_path_streams_and_completes():
@@ -130,7 +133,10 @@ def test_step_timeout_cancels_and_fails():
     for _ in range(25):                           # module keeps reporting RUNNING
         h.state('nav', ex.RUNNING, 'p1', 0)
         h.advance(0.1)
-    assert h.cancels == [('nav', 'p1', 0)] and h.x.phase == 'IDLE'
+    assert h.cancels == [('nav', 'p1', 0)] and h.x.phase == 'STOPPING'
+    assert (ex.S_FAILED, 0, 1, 'timeout') in h.statuses
+    h.state('nav', ex.IDLE, '', 0, 'cancelled')   # rule 2: over only once the module is IDLE
+    assert h.x.phase == 'IDLE'
 
 
 def test_module_failed_aborts_plan():
@@ -172,16 +178,19 @@ def test_user_stop_during_nav_cancels_immediately():
     assert h.x.phase == 'IDLE' and '멈춥니다.' in h.says
 
 
-def test_user_stop_during_vla_is_deferred_to_safe_point():
+def test_user_stop_during_vla_cancels_immediately():
+    """rule 2: vla gets the cancel too; deferring to a safe point is the module's call"""
     h = Harness()
     h.x.heard('p1', 'x')
     h.plan('p1', CUCUMBER)
     run_step(h, 'nav', 'p1', 0)
     h.state('vla', ex.RUNNING, 'p1', 1)
     h.x.stop('user')
-    assert h.cancels == [] and h.x.phase == 'STOPPING'   # no cancel for vla
-    h.state('vla', ex.DONE, 'p1', 1)                    # safe point reached
+    assert h.cancels == [('vla', 'p1', 1)] and h.x.phase == 'STOPPING'
+    for _ in range(3):                                  # module chose to finish at its safe point
+        h.state('vla', ex.DONE, 'p1', 1, 'cancelled_at_safe_point')
     assert len(h.cmds) == 2                             # step 2 NOT dispatched
+    assert h.kinds().count(ex.T_STEP_DONE) == 2         # nav + this one, shown once
     h.state('vla', ex.IDLE, '', 0)
     assert h.x.phase == 'IDLE'
 
@@ -244,3 +253,142 @@ def test_late_state_from_old_plan_is_ignored():
     h.plan('p1', CUCUMBER[:1])
     h.state('nav', ex.DONE, 'p0', 0)              # stale report from a previous plan
     assert h.x.phase == 'RUNNING' and h.x._st == 'ACCEPT'
+
+
+# --- rule 1: the next Cmd waits for the previous module's IDLE ---------------------------
+
+def test_next_step_waits_for_idle_not_done():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER)
+    h.state('nav', ex.RUNNING, 'p1', 0)
+    for _ in range(3):                            # DONE x3 at 10 Hz
+        h.state('nav', ex.DONE, 'p1', 0)
+        h.advance(0.1)
+    assert h.cmds == [('nav', 0, 'move_to', 'p1')] and h.x._st == 'WAIT_IDLE'
+    assert ex.T_STEP_DONE in h.kinds()            # the screen still hears about DONE at once
+    h.state('nav', ex.IDLE, '', 0)
+    assert h.cmds[-1] == ('vla', 1, 'open', 'p1')
+
+
+def test_same_module_back_to_back_waits_for_idle():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER)
+    run_step(h, 'nav', 'p1', 0)
+    h.state('vla', ex.RUNNING, 'p1', 1)
+    h.state('vla', ex.DONE, 'p1', 1)
+    assert h.cmds[-1] == ('vla', 1, 'open', 'p1')  # pick not sent while vla says DONE
+    h.state('vla', ex.IDLE, '', 0)
+    assert h.cmds[-1] == ('vla', 2, 'pick', 'p1')
+
+
+def test_last_step_waits_for_idle_before_plan_done():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER[:1])
+    h.state('nav', ex.RUNNING, 'p1', 0)
+    h.state('nav', ex.DONE, 'p1', 0)
+    assert ex.T_PLAN_DONE not in h.kinds() and h.x.phase == 'RUNNING'
+    h.state('nav', ex.IDLE, '', 0)
+    assert ex.T_PLAN_DONE in h.kinds() and h.x.phase == 'IDLE'
+
+
+def test_done_without_idle_fails_the_plan():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER)
+    h.state('nav', ex.RUNNING, 'p1', 0)
+    h.state('nav', ex.DONE, 'p1', 0)
+    h.advance(1.2)                                # idle_wait_s 1.0, IDLE never comes
+    assert h.x.phase == 'IDLE' and len(h.cmds) == 1
+    assert '이동 모듈이 응답하지 않습니다.' in h.says
+    assert (ex.S_FAILED, 0, 6, 'did not go idle') in h.statuses
+
+
+# --- rule 2: every stop is cancel → IDLE ---------------------------------------------
+
+def test_new_command_preempts_running_vla_with_a_cancel():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER)
+    run_step(h, 'nav', 'p1', 0)
+    h.state('vla', ex.RUNNING, 'p1', 1)
+    h.x.heard('p2', '테이블로 가')
+    h.x.on_step('p2', SUB, 0, 'move_to', ['table'], '테이블로 갑니다.', '', '')
+    assert h.cancels == [('vla', 'p1', 1)] and h.x.phase == 'STOPPING'
+    h.x.on_step('p2', END, 1, '', [], '', '', '')
+    h.state('vla', ex.IDLE, '', 0, 'cancelled')
+    assert h.x.plan_id == 'p2' and h.cmds[-1] == ('nav', 0, 'move_to', 'p2')
+
+
+def test_module_that_does_not_stop_blocks_the_new_plan():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER)
+    h.state('nav', ex.RUNNING, 'p1', 0)
+    h.x.heard('p2', '테이블로 가')
+    h.x.on_step('p2', SUB, 0, 'move_to', ['table'], '테이블로 갑니다.', '', '')
+    h.x.on_step('p2', END, 1, '', [], '', '', '')
+    for _ in range(35):                           # past safe_stop nav 3 s, still RUNNING
+        h.state('nav', ex.RUNNING, 'p1', 0)
+        h.advance(0.1)
+    assert h.x.phase == 'IDLE'
+    assert h.cmds == [('nav', 0, 'move_to', 'p1')]  # p2 never sent
+    assert planner.phrase(CFG, 'stop_failed') in h.says
+    assert (ex.S_FAILED, 0, 0, 'module did not stop') in h.statuses
+
+
+def test_idle_that_predates_the_cmd_is_not_trusted():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER[:1])
+    h.x.stop('user')                              # the Cmd may still be in flight
+    assert h.cancels == [('nav', 'p1', 0)]
+    h.state('nav', ex.IDLE, '', 0)                # old IDLE, before the Cmd landed
+    assert h.x.phase == 'STOPPING'
+    h.advance(0.6)                                # past cancel_ack_s
+    h.state('nav', ex.IDLE, '', 0, 'cancelled')
+    assert h.x.phase == 'IDLE'
+
+
+def test_stop_during_wait_idle_waits_without_a_cancel():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER)
+    h.state('nav', ex.RUNNING, 'p1', 0)
+    h.state('nav', ex.DONE, 'p1', 0)
+    h.x.stop('user')
+    assert h.cancels == [] and h.x.phase == 'STOPPING'   # nothing left to cancel
+    assert (ex.T_CANCEL, -1, '다음 단계 전에 중단') in h.traces
+    h.state('nav', ex.IDLE, '', 0)
+    assert h.x.phase == 'IDLE' and len(h.cmds) == 1
+
+
+def test_stop_during_graceful_finish_cancels_now():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER[:2], end=False)
+    run_step(h, 'nav', 'p1', 0)
+    h.state('vla', ex.RUNNING, 'p1', 1)
+    h.x.on_step('p1', ERROR, 0, '', [], '', '', 'arg sink not in vocab')
+    assert h.cancels == []                        # plan error: the step may finish
+    h.x.stop('user')
+    assert h.cancels == [('vla', 'p1', 1)]
+    h.state('vla', ex.IDLE, '', 0, 'cancelled')
+    assert h.x.phase == 'IDLE'
+
+
+def test_graceful_finish_is_cancelled_after_the_step_timeout():
+    h = Harness(params=ex.Params(step_timeout_s={'nav': 60.0, 'vla': 2.0}))
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER[:2], end=False)
+    run_step(h, 'nav', 'p1', 0)
+    h.state('vla', ex.RUNNING, 'p1', 1)
+    h.x.on_step('p1', ERROR, 0, '', [], '', '', 'arg sink not in vocab')
+    for _ in range(25):                           # a vla that never reports DONE
+        h.state('vla', ex.RUNNING, 'p1', 1)
+        h.advance(0.1)
+    assert h.cancels == [('vla', 'p1', 1)] and h.x.phase == 'STOPPING'
+    h.state('vla', ex.IDLE, '', 0, 'cancelled')
+    assert h.x.phase == 'IDLE'
