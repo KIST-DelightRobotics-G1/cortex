@@ -15,7 +15,7 @@ SUB, END, REPLY, ERROR = 0, 1, 2, 3
 
 
 class Harness:
-    def __init__(self, detector=None, params=None):
+    def __init__(self, detector=None, params=None, rewriter=None):
         self.t = 0.0
         self.cmds, self.cancels, self.says, self.traces, self.statuses = [], [], [], [], []
         self.detector = detector or (lambda target: (True, 'ok'))
@@ -29,7 +29,7 @@ class Harness:
             trace=lambda k, pid, i, title, body: self.traces.append((k, i, title)),
             status=lambda st, task, sub, i, n, d: self.statuses.append((st, i, n, d)),
         )
-        self.x = ex.Executor(CFG, ports, params or ex.Params())
+        self.x = ex.Executor(CFG, ports, params or ex.Params(), rewriter=rewriter)
 
     # --- helpers -----------------------------------------------------------
     def advance(self, dt: float, step: float = 0.1):

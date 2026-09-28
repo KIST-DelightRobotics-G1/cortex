@@ -85,6 +85,8 @@ orchestrator_node:
     detector_fail_open: true
     tts_prefetch_topic: /cortex/tts/prefetch
     tts_warmup_topic: /cortex/tts/warmup
+    # demo-only steps inserted between plan lines (config/plan_rewrites.yaml). '' = off.
+    # plan_rewrites_path: default = installed share/cortex_cognition/config/plan_rewrites.yaml
     ack_phrase: '네.'                   # said when a request goes to the LLM (idle only); '' = off
 
 llm_node:

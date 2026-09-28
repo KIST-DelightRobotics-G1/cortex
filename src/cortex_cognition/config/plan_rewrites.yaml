@@ -1,0 +1,37 @@
+# plan_rewrites.yaml — 시연 전용 계획 보정. 오케스트레이터가 검증을 통과한 계획 줄 사이에만 끼운다.
+#
+# LLM 프롬프트에는 들어가지 않는다 (actions.yaml 과 분리). 작업 분해의 문제가 아니라
+# 시연 배치 · VLA 학습 범위 때문에 필요한 동작이다. VLA 가 스스로 하게 되면 규칙을 지우고,
+# 규칙이 하나도 안 남으면 이 파일을 지우면 된다 (파라미터 plan_rewrites_path: '' 도 같다).
+#
+# 규칙: between 의 두 패턴이 계획에서 나란히 나오면 그 사이에 insert 를 끼운다.
+#   a     action 하나 또는 목록
+#   args  앞쪽 인자만 비교 (args: [cucumber] 는 pick(cucumber) · take_out(cucumber, fridge) 둘 다)
+# 끼운 단계는 말하지 않는다 (say 없음). 화면에는 계획 줄로 보인다.
+
+verbs:                        # 여기서만 쓰는 동사
+  approach:
+    exec: vla
+    ko: 다가가기
+    title: "{0} 앞으로 다가가기"          # {0} = 인자의 한국어 이름
+    instruction: "Approach the {0}."    # {0} = 영어 이름표 (fridge → refrigerator). VLA 학습 문장과 맞출 것
+  step_back:
+    exec: vla
+    ko: 물러나기
+    title: "{0}에서 물러나기"
+    instruction: "Step back from the {0}."
+
+rules:
+  - name: fridge_reach        # 문을 연 자리에서는 팔이 오이에 닿지 않는다
+    between:
+      - {a: open, args: [fridge_door]}
+      - {a: [pick, take_out], args: [cucumber]}
+    insert:
+      - {a: approach, args: [fridge]}
+
+  - name: fridge_back_off     # 오이를 든 채 문을 닫으려면 뒤로 공간이 필요하다
+    between:
+      - {a: [pick, take_out], args: [cucumber]}
+      - {a: close, args: [fridge_door]}
+    insert:
+      - {a: step_back, args: [fridge]}

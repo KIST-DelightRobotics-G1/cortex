@@ -99,10 +99,12 @@ class ModuleView:
 
 
 class Executor:
-    def __init__(self, cfg: dict, ports: Ports, params: Params | None = None) -> None:
+    def __init__(self, cfg: dict, ports: Ports, params: Params | None = None,
+                 rewriter=None) -> None:
         self.cfg = cfg
         self.p = ports
         self.prm = params or Params()
+        self.rw = rewriter                      # rewrite.Rewriter — demo-only inserts, or None
         self.mod = {'nav': ModuleView(), 'vla': ModuleView()}
         self._reset()
 
@@ -123,6 +125,7 @@ class Executor:
         self._pending: Optional[dict] = None   # plan waiting to start after a stop
         self._stop_reason = ''
         self._confirm_summary = ''
+        self._offset = 0                # steps inserted by rewrites so far (LLM index → executor index)
 
     @property
     def state_for_llm(self) -> str:
@@ -160,7 +163,7 @@ class Executor:
         else:
             # running: keep going; the LLM's answer decides (new plan → preempt, chat → say)
             self._pending = {'plan_id': plan_id, 'utterance': utterance, 'steps': {}, 'count': -1,
-                             'speculative': True}
+                             'offset': 0, 'speculative': True}
         return state
 
     def _error_say(self, detail: str) -> str:
@@ -212,10 +215,10 @@ class Executor:
             return
         if kind == KIND_END:
             if target == 'pending':
-                self._pending['count'] = index
+                self._pending['count'] = index + self._pending['offset']
             else:
-                self.count = index
-                self.p.trace(T_PLAN_END, plan_id, index, f'계획 {index}단계', '')
+                self.count = index + self._offset
+                self.p.trace(T_PLAN_END, plan_id, self.count, f'계획 {self.count}단계', '')
                 if self._st == 'WAIT_STEP':
                     self._advance()
             return
@@ -224,19 +227,43 @@ class Executor:
                     planner.instruction_for(self.cfg, action, args),
                     planner.step_title(self.cfg, action, args), detail)
         if target == 'pending':
-            self._pending['steps'][index] = step
+            self._pending['offset'], _ = self._place(self._pending['steps'],
+                                                     self._pending['offset'], step)
             if self._pending.get('speculative') and index == 0:
                 # The LLM decided this is a new command → preempt the running plan
                 self._pending['speculative'] = False
                 self._begin_stop('preempted by new command', keep_pending=True)
             return
-        self.steps[index] = step
-        self.p.trace(T_PLAN_LINE, plan_id, index, step.title, detail)
+        self._offset, added = self._place(self.steps, self._offset, step)
+        for s in added:
+            self.p.trace(T_PLAN_LINE, plan_id, s.index, s.title, s.raw)
         if self.phase == 'PLANNING' and index == 0:
             self.phase = 'RUNNING'
             self._dispatch(0)
-        elif self._st == 'WAIT_STEP' and index == self.cur + 1:
+        elif self._st == 'WAIT_STEP' and added[0].index == self.cur + 1:
             self._advance()
+
+    def _place(self, steps: dict, offset: int, step: Step) -> tuple:
+        """An LLM line → its executor index, with any demo rewrite inserted in front of it.
+
+        Rewrites (rewrite.py) look at the pair (previous line, this line). Inserted steps
+        shift everything after them, so the executor numbers steps itself from here on:
+        executor index = LLM index + steps inserted so far. Returns (offset, added steps)."""
+        step.index += offset
+        added = []
+        prev = steps.get(step.index - 1)
+        if prev is not None and self.rw is not None:
+            for ins in self.rw.between(prev.action, prev.args, step.action, step.args):
+                s = Step(step.index, ins.action, ins.args, '', ins.exec, ins.instruction,
+                         ins.title, f'rewrite:{ins.rule}')
+                steps[s.index] = s
+                added.append(s)
+                self.p.log(f'rewrite {ins.rule}: {ins.action}{ins.args} before {step.action}{step.args}')
+                step.index += 1
+                offset += 1
+        steps[step.index] = step
+        added.append(step)
+        return offset, added
 
     def on_state(self, exec: str, status: int, plan_id: str, index: int,
                  detail: str, progress: float) -> None:
@@ -366,8 +393,9 @@ class Executor:
         self._st, self._t, self._retries = 'ACCEPT', self.p.now(), 0
         self._busy_seen = self._final_traced = False
         self.p.send_cmd(st.exec, st, self.plan_id)
-        self.p.say(st.say)
-        self.p.trace(T_STEP_START, self.plan_id, index, st.say, '')
+        if st.say:                                       # inserted demo steps are silent
+            self.p.say(st.say)
+        self.p.trace(T_STEP_START, self.plan_id, index, st.say or st.title, '')
         self._status(S_RUNNING)
 
     def _advance(self) -> None:
@@ -459,6 +487,7 @@ class Executor:
             self.utterance = pending['utterance']
             self.steps = pending['steps']
             self.count = pending['count']
+            self._offset = pending['offset']
             for i in sorted(self.steps):
                 s = self.steps[i]
                 self.p.trace(T_PLAN_LINE, self.plan_id, i, s.title, s.raw)

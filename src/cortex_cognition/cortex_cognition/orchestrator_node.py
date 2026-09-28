@@ -49,6 +49,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
 from . import executor as ex
 from . import planner
+from . import rewrite
 
 
 # ===========================================================================
@@ -262,6 +263,9 @@ class OrchestratorNode(Node):
         self.declare_parameter('planner_mode', 'static')          # static | llm
         self.declare_parameter('actions_path', os.path.join(
             get_package_share_directory('cortex_cognition'), 'config', 'actions.yaml'))
+        # demo-only plan patches (rewrite.py); '' = off
+        self.declare_parameter('plan_rewrites_path', os.path.join(
+            get_package_share_directory('cortex_cognition'), 'config', 'plan_rewrites.yaml'))
         self.declare_parameter('llm_request_topic', '/cortex/llm/request')
         self.declare_parameter('llm_step_topic', '/cortex/llm/step')
         self.declare_parameter('nav_cmd_topic', '/cortex/nav/cmd')
@@ -402,12 +406,14 @@ class OrchestratorNode(Node):
             status=self._status_llm,
             log=lambda s: self.get_logger().info(s),
         )
-        self._exec = ex.Executor(self.cfg, ports, prm)
+        self.rewriter = rewrite.Rewriter.load(g('plan_rewrites_path').value, self.cfg)
+        self._exec = ex.Executor(self.cfg, ports, prm, rewriter=self.rewriter)
         # 100 ms absence monitor (accept / stale / step timeouts); everything else is event-driven.
         self.create_timer(0.1, self._exec.tick, callback_group=grp)
         self.get_logger().info(
             f'llm mode: {len(self.cfg["actions"])} actions, '
-            f'{len(self.cfg["nav"]["places"])} places, detector={g("detector_service").value}')
+            f'{len(self.cfg["nav"]["places"])} places, detector={g("detector_service").value}, '
+            f'plan rewrites={self.rewriter.names or "off"}')
 
     def _warm_tts_cache(self) -> None:
         """Every fixed phrase / example say → tts prefetch, one per tick, starting 3 s after boot."""
