@@ -8,7 +8,6 @@ stt_node:
     # If that repo lands on different names, change them here — not in code.
     audio_topic: /bridge/sensors/audio_pcm
     speaker_state_topic: /bridge/audio/speaker_state   # comm_bridge outbound (was /bridge/sensors/* — mismatch)
-    estop_topic: /bridge/safety/estop
     transcript_topic: /cortex/stt/transcript
     backend: google_cloud        # google_cloud (v1) | google_cloud_v2 | dummy (no credentials)
     # v1 'default' is a long-form model: it never endpoints on its own and the
@@ -33,7 +32,6 @@ tts_node:
     say_topic: /cortex/tts/say          # ActionCmd (orchestrator -> tts)
     barge_in_topic: /cortex/tts/stop
     audio_out_topic: /bridge/cmd/audio_out
-    estop_topic: /bridge/safety/estop
     backend: naver_clova
     language_code: ko-KR
     sample_rate_hz: 16000        # wire format (PC resamples — REQ-29)

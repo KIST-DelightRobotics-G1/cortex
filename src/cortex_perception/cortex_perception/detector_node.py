@@ -33,7 +33,7 @@ import time
 import numpy as np
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage, Image
 
@@ -209,11 +209,12 @@ def main(args=None) -> None:
     ex.add_node(node)
     try:
         ex.spin()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():                  # launch's SIGINT may have shut the context down already
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

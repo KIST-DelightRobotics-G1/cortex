@@ -32,6 +32,7 @@ import json
 import threading
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage, Image
 
@@ -287,12 +288,13 @@ def main(args=None) -> None:
     node = GuiBridgeNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.request_shutdown()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():                  # launch's SIGINT may have shut the context down already
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
