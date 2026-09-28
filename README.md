@@ -116,6 +116,31 @@ Parameters (topics, tick rate, cancel timeout) live in
 
 ---
 
+## Docker
+
+Same pattern as `kist-gearsonic-inference` / `kist-vla-inference`: one self-contained
+image (Humble + deps + source, built and tested at image-build time) and one persistent
+named container. Any host with Docker works — no ROS install needed on the host.
+
+```bash
+docker/build.sh                                   # image: kist-cortex
+docker/run.sh                                     # shell inside, ROS already sourced
+docker/run.sh ros2 launch cortex_bringup cortex.launch.py
+docker/run.sh ros2 launch cortex_bringup llm_demo.launch.py backend:=gemini speech:=true
+```
+
+- Credentials come from `.env` (`--env-file`, never baked in). Use
+  `GOOGLE_APPLICATION_CREDENTIALS_B64`; a host file path does not exist in the container.
+- `--network host`, `ROS_DOMAIN_ID=1`, `DDS_PEER_IP` as in `env.sh`. The NIC name in
+  `config/cyclonedds.xml` (`eno2`) must still match the host.
+- The TTS cache lives on the host (`~/.cache/cortex_tts`) and survives rebuilds.
+- Not in this image: detector_node's YOLO backend (runs as the `always` stub) and the
+  display renderer (cortex-gui has its own container).
+- Env file, mounts and DDS settings are fixed when the container is created — after
+  changing them, `docker rm -f kist-cortex` and run again.
+
+---
+
 ## DDS / domain
 
 `env.sh` sets `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`, `ROS_DOMAIN_ID=1` (the **bridge**

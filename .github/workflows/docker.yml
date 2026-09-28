@@ -1,0 +1,45 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  image:
+    name: image (build + smoke)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: docker/setup-buildx-action@v3
+
+      # colcon build + colcon test run inside the Dockerfile, so a green build
+      # already means the baked workspace passes its tests.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          tags: kist-cortex
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The offline loop end to end: dummy LLM -> orchestrator -> mock nav/vla.
+      # The runner has no eno2 and no NX, so DDS is pinned to loopback here.
+      - name: Smoke — one utterance runs to PLAN_DONE
+        env:
+          DDS_LO: >-
+            <CycloneDDS><Domain Id="any"><General><Interfaces><NetworkInterface name="lo"/></Interfaces>
+            <AllowMulticast>false</AllowMulticast></General><Discovery><Peers><Peer address="localhost"/></Peers>
+            <ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>50</MaxAutoParticipantIndex>
+            </Discovery></Domain></CycloneDDS>
+        run: |
+          docker run --rm -e CYCLONEDDS_URI="$DDS_LO" \
+            -v "$PWD/.github/scripts/docker_smoke.sh":/smoke.sh:ro \
+            kist-cortex bash /smoke.sh
