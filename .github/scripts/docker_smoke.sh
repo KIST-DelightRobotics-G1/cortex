@@ -18,6 +18,12 @@ for _ in $(seq 1 60); do
     sleep 1
 done
 
+# speaker_node with the real SDK: rclpy + unitree_sdk2py on one libddsc. No robot
+# here, so only the start-up (AudioClient on domain 0) is checked.
+timeout 8 ros2 run cortex_action speaker_node > /tmp/speaker.log 2>&1 || true
+grep -q "speaker_node up" /tmp/speaker.log || { echo "--- speaker_node did not start"; cat /tmp/speaker.log; exit 1; }
+echo "speaker_node up (unitree_sdk2py on ROS's libddsc)"
+
 echo "--- trace titles"
 grep "title:" /tmp/trace.log || true
 if grep -q "kind: 10" /tmp/trace.log; then

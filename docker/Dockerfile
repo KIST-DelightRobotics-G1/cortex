@@ -36,6 +36,29 @@ WORKDIR /workspace/cortex
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt "pytest>=7,<9"
 
+# ─── Unitree SDK (speaker_node -> the robot speaker via AudioClient) ──────────
+# unitree_sdk2py is pure Python on the cyclonedds binding. That binding is built
+# against ROS's OWN CycloneDDS so rclpy and the SDK share one libddsc in the
+# speaker_node process (two copies would each run their own domain 0). ROS puts
+# the headers and library one level deeper than the binding's build looks, hence
+# the /opt/ros-cyclonedds shim; CYCLONEDDS_HOME points the binding at it at run
+# time too. --no-deps: the SDK would re-pin cyclonedds and pull opencv.
+ARG UNITREE_SDK2PY_REF=master
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* && \
+    source /opt/ros/humble/setup.bash && \
+    V=$(dpkg-query -W -f='${Version}' ros-humble-cyclonedds | cut -d- -f1) && \
+    INC=$(dirname "$(dirname "$(find /opt/ros/humble/include -path '*/dds/dds.h' | head -1)")") && \
+    LIB=$(dirname "$(find /opt/ros/humble/lib -name 'libddsc.so' | head -1)") && \
+    mkdir -p /opt/ros-cyclonedds && ln -s "$INC" /opt/ros-cyclonedds/include && \
+    ln -s "$LIB" /opt/ros-cyclonedds/lib && ln -s /opt/ros/humble/bin /opt/ros-cyclonedds/bin && \
+    CYCLONEDDS_HOME=/opt/ros-cyclonedds pip3 install --no-cache-dir --no-binary cyclonedds "cyclonedds==${V}" && \
+    git clone --depth 1 --branch "${UNITREE_SDK2PY_REF}" \
+        https://github.com/unitreerobotics/unitree_sdk2_python.git /tmp/unitree_sdk2_python && \
+    pip3 install --no-cache-dir --no-deps /tmp/unitree_sdk2_python && rm -rf /tmp/unitree_sdk2_python && \
+    CYCLONEDDS_HOME=/opt/ros-cyclonedds python3 -c \
+        "from unitree_sdk2py.g1.audio.g1_audio_client import AudioClient; print('unitree_sdk2py OK')"
+ENV CYCLONEDDS_HOME=/opt/ros-cyclonedds
+
 # ─── source + build + test ────────────────────────────────────────────────────
 # .dockerignore keeps build/ install/ log/ .git out of the context. The
 # g1_onboard_msgs submodule must be checked out on the host (build.sh does it).
@@ -51,7 +74,8 @@ RUN source /opt/ros/humble/setup.bash && \
 ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
     CYCLONEDDS_URI=file:///workspace/cortex/config/cyclonedds.xml \
     ROS_DOMAIN_ID=0 \
-    DDS_PEER_IP=192.168.123.164
+    DDS_PEER_IP=192.168.123.164 \
+    DDS_ROBOT_IP=192.168.123.161
 
 # `docker exec` skips the entrypoint, so interactive shells source it too.
 COPY docker/entrypoint.sh /entrypoint.sh

@@ -1,7 +1,7 @@
 """tts_node — Text-to-Speech [REQ-29]. Port of the workstation TTSProvider.
 
     ActionCmd (/cortex/tts/say)  -> Clova REST -> resample 16k -> AudioPCM
-                                                                  (/bridge/cmd/audio_out)
+                                                                  (/cortex/tts/audio)
 
 PCM cache + prefetch (SYS-REQ-29 latency): the sentences this robot says are
 short and repeat (LLM `say` lines, fixed phrases). Every synthesized sentence is
@@ -81,7 +81,7 @@ class TTSConfig:
 # ===========================================================================
 class TtsNode(Node):
     # AudioPCM per-message payload limit is 65500 B; 32000 B ~= 1.0s @ 16kHz mono
-    # int16 leaves headroom. NX speaker_node consumes a chunk queue and reports
+    # int16 leaves headroom. speaker_node consumes a chunk queue and reports
     # progress via SpeakerState.current_chunk_id / queue_depth — one utterance
     # per message is explicitly NOT the design.
     _PUBLISH_CHUNK_BYTES = 32000
@@ -92,7 +92,7 @@ class TtsNode(Node):
         # --- parameters -> TTSConfig --------------------------------------
         self.declare_parameter('say_topic', '/cortex/tts/say')
         self.declare_parameter('barge_in_topic', '/cortex/tts/stop')
-        self.declare_parameter('audio_out_topic', '/bridge/cmd/audio_out')
+        self.declare_parameter('audio_out_topic', '/cortex/tts/audio')     # -> speaker_node
         self.declare_parameter('prefetch_topic', '/cortex/tts/prefetch')   # upcoming say lines (urgent)
         self.declare_parameter('warmup_topic', '/cortex/tts/warmup')       # boot-time phrase list (background)
         self.declare_parameter('cache_dir', os.path.expanduser('~/.cache/cortex_tts'))
@@ -295,8 +295,8 @@ class TtsNode(Node):
     def is_synthesizing(self) -> bool:
         """True while a request is in flight to the cloud TTS.
 
-        For "is the NX speaker actually emitting sound right now?", read
-        SpeakerState.playing instead — that flag is raised by NX speaker_node
+        For "is the speaker actually emitting sound right now?", read
+        SpeakerState.playing instead — that flag is raised by speaker_node
         based on actual playback, not PC-side synthesis status.
         """
         return self._inflight_task is not None
