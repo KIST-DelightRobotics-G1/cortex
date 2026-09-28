@@ -158,6 +158,12 @@ types match `src/kist_msgs`, and the subtask contract matches `cortex_msgs`.
 | `rt/kist/mic/array/audio` | `/kist/mic/array/audio` · `kist_msgs/AudioChunk` (16 kHz × 6, channel 0 used) | stt_node |
 | `rt/kist/camera/head/color/h264` | `/kist/camera/head/color/h264` · `kist_msgs/CompressedColorFrame` (decoded with PyAV) | gui_bridge_node, detector_node |
 
+Speech out: `tts_node` → `/cortex/tts/audio` → `speaker_node` → Unitree `AudioClient.PlayStream`
+(DDS RPC to the G1 audio service `voice`) → robot speaker. `speaker_node` publishes
+`/cortex/speaker/state` so `stt_node` mutes the mic while it plays. The audio service runs
+on the G1 internal PC, listed as `DDS_ROBOT_IP` (default `192.168.123.161` — verify on the
+robot) because multicast discovery is off.
+
 ---
 
 ## Where the spec lives

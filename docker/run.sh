@@ -35,7 +35,7 @@ CMD=("$@")
 
 # The env file, mounts and -e values apply only at container CREATION.
 warn_reuse() {
-    if [ -n "${CORTEX_ENV_FILE:-}${TTS_CACHE_DIR_GIVEN}${ROS_DOMAIN_ID:-}${DDS_PEER_IP:-}" ]; then
+    if [ -n "${CORTEX_ENV_FILE:-}${TTS_CACHE_DIR_GIVEN}${ROS_DOMAIN_ID:-}${DDS_PEER_IP:-}${DDS_ROBOT_IP:-}" ]; then
         echo "WARNING: reusing the existing '${CONTAINER}' container — its env file," >&2
         echo "         mounts and DDS settings were fixed at creation and are IGNORED now." >&2
         echo "         To apply them: docker rm -f ${CONTAINER}  # then re-run this script" >&2
@@ -65,5 +65,6 @@ exec docker run -it --name "${CONTAINER}" \
     "${ENV_ARGS[@]}" \
     -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" \
     -e DDS_PEER_IP="${DDS_PEER_IP:-192.168.123.164}" \
+    -e DDS_ROBOT_IP="${DDS_ROBOT_IP:-192.168.123.161}" \
     -v "${TTS_CACHE_DIR}":/root/.cache/cortex_tts \
     "${IMAGE}" "${CMD[@]}"

@@ -8,7 +8,7 @@ stt_node:
     # XVF3800 array is 16 kHz x 6: channel 0 is its processed (beamformed) output.
     audio_topic: /kist/mic/array/audio
     mic_channel: 0
-    speaker_state_topic: /bridge/audio/speaker_state   # comm_bridge outbound (was /bridge/sensors/* — mismatch)
+    speaker_state_topic: /cortex/speaker/state         # speaker_node: mic muted while it plays
     transcript_topic: /cortex/stt/transcript
     backend: google_cloud        # google_cloud (v1) | google_cloud_v2 | dummy (no credentials)
     # v1 'default' is a long-form model: it never endpoints on its own and the
@@ -32,7 +32,7 @@ tts_node:
   ros__parameters:
     say_topic: /cortex/tts/say          # ActionCmd (orchestrator -> tts)
     barge_in_topic: /cortex/tts/stop
-    audio_out_topic: /bridge/cmd/audio_out
+    audio_out_topic: /cortex/tts/audio            # -> speaker_node
     backend: naver_clova
     language_code: ko-KR
     sample_rate_hz: 16000        # wire format (PC resamples — REQ-29)
@@ -43,6 +43,18 @@ tts_node:
     prefetch_topic: /cortex/tts/prefetch   # upcoming say lines (urgent, ahead of warm-up)
     warmup_topic: /cortex/tts/warmup       # boot-time phrase list from the orchestrator (latched)
     cache_dir: ~/.cache/cortex_tts         # 16 kHz PCM per sentence; '' disables. Measured CLOVA TTFA p50 0.65 s → hit ~0 ms
+
+speaker_node:
+  ros__parameters:
+    # tts_node audio -> the robot's built-in speaker through the Unitree AudioClient
+    # (a DDS RPC to the G1 audio service "voice" on domain 0; see config/cyclonedds.xml
+    # DDS_ROBOT_IP). Same 16 kHz / mono / 16-bit lock as AudioPCM.
+    audio_topic: /cortex/tts/audio      # = tts_node.audio_out_topic
+    state_topic: /cortex/speaker/state  # = stt_node.speaker_state_topic
+    stop_topic: /cortex/tts/stop        # barge-in: drop what was said before it
+    max_queue_depth: 50                 # SpeakerState.queue_depth is uint8
+    app_name: cortex_tts                # AudioClient stream owner tag
+    client_timeout_s: 2.0               # reply wait per chunk; the mic stays muted meanwhile
 
 orchestrator_node:
   ros__parameters:

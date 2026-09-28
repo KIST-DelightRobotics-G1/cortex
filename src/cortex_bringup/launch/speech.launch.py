@@ -1,4 +1,4 @@
-"""Speech I/O only: STT (perception) + TTS (action).
+"""Speech I/O only: STT (perception) + TTS and the robot speaker (action).
 
 A subset of cortex.launch.py for exercising the audio path without the cognition
 layer. The two nodes live in different packages now — stt_node is perception
@@ -23,4 +23,5 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         node('cortex_perception', 'stt_node'),
         node('cortex_action', 'tts_node'),
+        node('cortex_action', 'speaker_node'),
     ])

@@ -11,7 +11,7 @@ UnitreeG1Provider push callbacks -> ROS subscriptions.
 Echo cancellation: mic input is dropped while SpeakerState.playing is true, with
 an ``echo_cancel_tail_ms`` tail-off after it clears. Silent PCM of equal length is
 injected instead so Google's idle timeout does not kill the stream. No active
-coordination with tts_node is needed — NX speaker_node owns the playing flag.
+coordination with tts_node is needed — speaker_node owns the playing flag.
 ``echo_cancel_lead_ms`` (default 0) can pre-mute before the DDS hop lands; it is
 the only path that would need a tts_node -> stt_node signal, and it is off.
 
@@ -181,7 +181,7 @@ class SttNode(Node):
         self.declare_parameter('audio_topic', '/kist/mic/array/audio')   # ext-sensor-io AudioChunk
         self.declare_parameter('mic_channel', 0)     # XVF3800: 0 = processed (beamformed) signal
         self.declare_parameter('transcript_topic', '/cortex/stt/transcript')
-        self.declare_parameter('speaker_state_topic', '/bridge/audio/speaker_state')
+        self.declare_parameter('speaker_state_topic', '/cortex/speaker/state')   # speaker_node
         self.declare_parameter('backend', STTBackend.GOOGLE_CLOUD.value)
         self.declare_parameter('language_code', 'ko-KR')
         self.declare_parameter('sample_rate_hz', 16000)

@@ -31,6 +31,9 @@
       <Peers>
         <Peer address="localhost"/>
         <Peer address="${DDS_PEER_IP}"/>
+        <!-- G1 internal PC: runs the audio service ("voice") speaker_node calls. With
+             multicast off it is only found if listed. Verify the address on the robot. -->
+        <Peer address="${DDS_ROBOT_IP}"/>
       </Peers>
       <ParticipantIndex>auto</ParticipantIndex>
       <MaxAutoParticipantIndex>20</MaxAutoParticipantIndex>

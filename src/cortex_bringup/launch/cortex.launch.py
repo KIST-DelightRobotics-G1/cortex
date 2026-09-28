@@ -24,6 +24,7 @@ def generate_launch_description() -> LaunchDescription:
         node('cortex_cognition', 'orchestrator_node'),
         # --- action ---
         node('cortex_action', 'tts_node'),
+        node('cortex_action', 'speaker_node'),        # -> robot speaker (Unitree AudioClient)
         # --- gui egress ---
         node('cortex_gui', 'gui_bridge_node'),
     ])
