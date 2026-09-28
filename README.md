@@ -144,9 +144,10 @@ docker/run.sh ros2 launch cortex_bringup llm_demo.launch.py backend:=gemini spee
 ## DDS / domain
 
 `env.sh` sets `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`, `ROS_DOMAIN_ID=0` and points
-`DDS_PEER_IP` at the NX. `config/cyclonedds.xml` uses unicast peers (`AllowMulticast=false`)
-and no `lo` interface (with a second interface Cyclone sends discovery from a loopback
-socket and floods the log with `retcode -3`).
+`DDS_PEER_IP` at the NX. `config/cyclonedds.xml` discovers by **multicast**, like every
+module on the robot LAN (a unicast-only participant never meets a multicast one), with the
+NX and the G1 internal PC as extra unicast peers. No `lo` interface: with a second
+interface Cyclone sends discovery from a loopback socket and floods the log with `retcode -3`.
 
 Domain 0 is shared with ext-sensor-io, gearsonic, navigation-planner and vla-inference.
 Those modules speak plain DDS, not ROS, so the type names on the wire must be the ROS
@@ -162,7 +163,7 @@ Speech out: `tts_node` → `/cortex/tts/audio` → `speaker_node` → Unitree `A
 (DDS RPC to the G1 audio service `voice`) → robot speaker. `speaker_node` publishes
 `/cortex/speaker/state` so `stt_node` mutes the mic while it plays. The audio service runs
 on the G1 internal PC, listed as `DDS_ROBOT_IP` (default `192.168.123.161` — verify on the
-robot) because multicast discovery is off.
+robot) as an extra peer next to multicast discovery.
 
 ---
 
