@@ -5,9 +5,10 @@
 
 Arguments
     backend:=dummy|gemini|openai   LLM backend (gemini: GOOGLE_API_KEY, openai: OPENAI_API_KEY)
-    speech:=true                   add stt_node + tts_node — real voice in/out through the
-                                   /bridge/* audio topics (needs GOOGLE_APPLICATION_CREDENTIALS_B64
-                                   and NCP_CLOVA_CLIENT_ID / _SECRET; nav/vla stay mocked)
+    speech:=true                   add stt_node + tts_node — real mic from ext-sensor-io
+                                   (/kist/mic/array/audio) and TTS audio out (needs
+                                   GOOGLE_APPLICATION_CREDENTIALS_B64 and NCP_CLOVA_CLIENT_ID /
+                                   _SECRET; nav/vla stay mocked)
 
 Drive it from a terminal:
     ros2 topic pub -1 /cortex/stt/transcript std_msgs/msg/String "{data: '냉장고에서 오이 가져다줘'}"

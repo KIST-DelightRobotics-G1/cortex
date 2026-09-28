@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Source this file to activate the cortex ROS 2 workspace with the same
-# CycloneDDS config / bridge domain used by the onboard NX stack.
+# CycloneDDS config and DDS domain as the robot-side modules (domain 0).
 #
 #   source env.sh
 #
 # After sourcing, ros2 CLI commands share the DDS participant settings of the
-# running nodes and can discover the NX onboard nodes on the bridge domain.
+# running nodes and can discover the robot-side modules.
 
 _env_sh_dir="$( cd "$( dirname "${BASH_SOURCE[0]:-$0}" )" && pwd )"
 _ros_distro="${ROS_DISTRO:-humble}"
@@ -38,8 +38,8 @@ fi
 export CYCLONEDDS_URI="file://${_cyclonedds_xml}"
 export RMW_IMPLEMENTATION="rmw_cyclonedds_cpp"
 
-# Bridge domain shared with onboard (onboard cyclonedds.xml pins Domain Id=1).
-export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-1}
+# Domain 0: ext-sensor-io, gearsonic, navigation-planner, vla-inference.
+export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
 
 # Peer = the NX onboard IP (this PC is 192.168.123.222; NX is 192.168.123.164).
 export DDS_PEER_IP=${DDS_PEER_IP:-192.168.123.164}

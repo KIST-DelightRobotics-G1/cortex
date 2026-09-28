@@ -4,7 +4,7 @@ Port of the workstation STTProvider (TASK-42) to rclpy. The DSP, echo-cancel and
 Google streaming logic are carried over unchanged; only the transport swapped:
 UnitreeG1Provider push callbacks -> ROS subscriptions.
 
-    AudioPCM  (/bridge/sensors/audio_pcm)  -> filter -> queue -> backend worker
+    AudioChunk (/kist/mic/array/audio, ch 0) -> filter -> queue -> backend worker
                                                                       |
     std_msgs/String (/cortex/stt/transcript) <---------- TranscriptEvent
 
@@ -45,10 +45,14 @@ import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from scipy.signal import butter, sosfilt
 from std_msgs.msg import String
 
-from g1_onboard_msgs.msg import AudioPCM, SpeakerState
+from g1_onboard_msgs.msg import SpeakerState
+from kist_msgs.msg import AudioChunk
+
+from .ext_sensor import chunk_to_mono_s16
 
 _MAX_RECONNECT = 10
 
@@ -174,7 +178,8 @@ class SttNode(Node):
         super().__init__('stt_node')
 
         # --- parameters -> STTConfig --------------------------------------
-        self.declare_parameter('audio_topic', '/bridge/sensors/audio_pcm')
+        self.declare_parameter('audio_topic', '/kist/mic/array/audio')   # ext-sensor-io AudioChunk
+        self.declare_parameter('mic_channel', 0)     # XVF3800: 0 = processed (beamformed) signal
         self.declare_parameter('transcript_topic', '/cortex/stt/transcript')
         self.declare_parameter('speaker_state_topic', '/bridge/audio/speaker_state')
         self.declare_parameter('backend', STTBackend.GOOGLE_CLOUD.value)
@@ -226,8 +231,12 @@ class SttNode(Node):
         # --- io -------------------------------------------------------------
         grp = ReentrantCallbackGroup()
         self.pub = self.create_publisher(String, g('transcript_topic').value, 10)
+        self._mic_channel = int(g('mic_channel').value)
+        self._format_warned = False
+        # ext-sensor-io publishes BestEffort; a reliable reader would never match it.
         self.create_subscription(
-            AudioPCM, g('audio_topic').value, self._on_audio_msg, 10, callback_group=grp)
+            AudioChunk, g('audio_topic').value, self._on_audio_msg, qos_profile_sensor_data,
+            callback_group=grp)
         self.create_subscription(
             SpeakerState, g('speaker_state_topic').value, self._on_speaker_state, 10,
             callback_group=grp)
@@ -284,10 +293,20 @@ class SttNode(Node):
     def _on_speaker_state(self, msg: SpeakerState) -> None:
         self._speaker_playing = bool(msg.playing)
 
-    def _on_audio_msg(self, msg: AudioPCM) -> None:
-        """AudioPCM -> the provider's chunk path. ts is monotonic-at-receipt so it
-        is comparable with the echo-mute deadlines."""
-        self._on_audio_chunk(bytes(msg.data), time.monotonic())
+    def _on_audio_msg(self, msg: AudioChunk) -> None:
+        """ext-sensor-io AudioChunk -> one channel at sample_rate_hz -> the provider's
+        chunk path. ts is monotonic-at-receipt so it is comparable with the
+        echo-mute deadlines."""
+        if msg.format != 'S16_LE' or msg.channels < 1:
+            if not self._format_warned:
+                self._format_warned = True
+                self.get_logger().error(
+                    f'mic chunk {msg.format!r} x{msg.channels} not supported (S16_LE only); dropping')
+            return
+        ch = self._mic_channel if self._mic_channel < msg.channels else 0
+        pcm = chunk_to_mono_s16(msg.data, msg.channels, ch, msg.sample_rate,
+                                self._config.sample_rate_hz)
+        self._on_audio_chunk(pcm, time.monotonic())
 
     # --- audio path (ported unchanged) ------------------------------------
     def _on_audio_chunk(self, pcm: bytes, ts: float) -> None:

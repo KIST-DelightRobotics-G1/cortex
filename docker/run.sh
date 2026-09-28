@@ -63,7 +63,7 @@ mkdir -p "${TTS_CACHE_DIR}"
 exec docker run -it --name "${CONTAINER}" \
     --network host \
     "${ENV_ARGS[@]}" \
-    -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-1}" \
+    -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" \
     -e DDS_PEER_IP="${DDS_PEER_IP:-192.168.123.164}" \
     -v "${TTS_CACHE_DIR}":/root/.cache/cortex_tts \
     "${IMAGE}" "${CMD[@]}"

@@ -50,7 +50,7 @@ RUN source /opt/ros/humble/setup.bash && \
 # ROS_DOMAIN_ID / DDS_PEER_IP through).
 ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
     CYCLONEDDS_URI=file:///workspace/cortex/config/cyclonedds.xml \
-    ROS_DOMAIN_ID=1 \
+    ROS_DOMAIN_ID=0 \
     DDS_PEER_IP=192.168.123.164
 
 # `docker exec` skips the entrypoint, so interactive shells source it too.
