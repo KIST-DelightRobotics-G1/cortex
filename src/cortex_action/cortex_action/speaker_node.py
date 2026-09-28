@@ -14,6 +14,13 @@ cyclonedds Python binding against ROS's own CycloneDDS. The SDK's
 ChannelFactory.Init would create the domain a second time and fail, so it is
 patched to only add a participant to the domain rclpy already runs.
 
+Playback clock: PlayStream hands a chunk to the robot's buffer and returns
+(Unitree's own example sends 3 s of audio per second), so "sent" is not "heard".
+The node keeps the time the robot will fall silent — each chunk adds its length —
+and reports SpeakerState.playing until then, so stt_node keeps the mic muted for
+the whole sentence instead of hearing the robot's own voice. It also holds a
+chunk back while more than lead_s of audio is already buffered on the robot.
+
 Barge-in: "stop" can arrive while chunks of the old sentence are still queued
 or on the wire. Every AudioPCM carries its publish stamp; anything stamped
 before the stop is dropped, so the "멈춥니다." that follows it still plays.
@@ -34,6 +41,7 @@ from std_msgs.msg import Bool, Header
 from g1_onboard_msgs.msg import AudioPCM, SpeakerState
 
 SAMPLE_RATE, CHANNELS, BIT_DEPTH = 16000, 1, 16
+BYTES_PER_S = SAMPLE_RATE * CHANNELS * BIT_DEPTH // 8
 IDLE_CHUNK_ID = 0                 # SpeakerState.current_chunk_id when nothing plays
 MAX_CHUNK_ID = 0xFFFFFFFF         # uint32
 
@@ -76,12 +84,18 @@ class SpeakerNode(Node):
         # each chunk stalls this long while SpeakerState says "playing" (the mic stays
         # muted), so keep it short — the robot answers well inside it.
         self.declare_parameter('client_timeout_s', 2.0)
+        # at most this much audio sits in the robot's buffer ahead of what it plays
+        self.declare_parameter('lead_s', 1.5)
+        # added once per sentence: the robot starts playing a little after the send
+        self.declare_parameter('play_margin_s', 0.2)
 
         g = self.get_parameter
         self._max_q = int(g('max_queue_depth').value)
         if not 1 <= self._max_q < 256:
             raise ValueError(f'max_queue_depth must be in [1, 255]; got {self._max_q}')
         self._app = str(g('app_name').value)
+        self._lead_s = float(g('lead_s').value)
+        self._margin_s = float(g('play_margin_s').value)
 
         # --- state (writer thread and ROS callbacks share it under _lock) ----
         self._lock = threading.Lock()
@@ -91,6 +105,7 @@ class SpeakerNode(Node):
         self._stream_id: Optional[str] = None            # new id per playback session
         self._stop_ns = 0                                # stamp of the last barge-in
         self._stop_pending = False                       # PlayStop runs on the writer thread
+        self._play_end = 0.0                             # monotonic time the robot falls silent
 
         self._client = client or make_audio_client(self.context.get_domain_id(),
                                                    float(g('client_timeout_s').value))
@@ -154,14 +169,18 @@ class SpeakerNode(Node):
             if stop:
                 self._play_stop()
                 self._stream_id = None                   # the next sentence is a new stream
+                self._play_end = time.monotonic()        # nothing is audible any more
             if chunk is None:
-                if self._current_chunk_id != IDLE_CHUNK_ID:
+                left = self._play_end - time.monotonic()
+                if left <= 0 and self._current_chunk_id != IDLE_CHUNK_ID:
                     self._current_chunk_id = IDLE_CHUNK_ID
                     self._stream_id = None
-                    self._publish_state()                # idle transition
-                self._wake.wait(timeout=0.1)
+                    self._publish_state()                # idle only once the robot is quiet
+                self._wake.wait(timeout=min(0.1, left) if left > 0 else 0.1)
                 self._wake.clear()
                 continue
+            if not self._wait_for_room():
+                continue                                 # a stop came while this chunk waited: drop it
             chunk_id, _, pcm = chunk
             if self._stream_id is None:
                 self._stream_id = str(time.time_ns() // 1_000_000)
@@ -173,6 +192,22 @@ class SpeakerNode(Node):
                     self.get_logger().error(f'PlayStream failed: code={code} chunk_id={chunk_id}')
             except Exception as e:  # noqa: BLE001 - one bad chunk must not kill the writer
                 self.get_logger().error(f'PlayStream raised: {e!r}')
+            now = time.monotonic()
+            self._play_end = max(now + self._margin_s, self._play_end) + len(pcm) / BYTES_PER_S
+
+    def _wait_for_room(self) -> bool:
+        """Hold the next chunk while more than lead_s is already buffered on the robot.
+        False if a stop arrives meanwhile (the held chunk predates it)."""
+        while self._running:
+            ahead = self._play_end - time.monotonic()
+            if ahead <= self._lead_s:
+                return True
+            with self._lock:
+                if self._stop_pending:
+                    return False
+            self._wake.wait(timeout=min(ahead - self._lead_s, 0.05))
+            self._wake.clear()
+        return False
 
     def _play_stop(self) -> None:
         try:

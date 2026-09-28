@@ -55,6 +55,8 @@ speaker_node:
     max_queue_depth: 50                 # SpeakerState.queue_depth is uint8
     app_name: cortex_tts                # AudioClient stream owner tag
     client_timeout_s: 2.0               # reply wait per chunk; the mic stays muted meanwhile
+    lead_s: 1.5                         # max audio buffered on the robot ahead of playback
+    play_margin_s: 0.2                  # the robot starts playing a little after the send
 
 orchestrator_node:
   ros__parameters:
