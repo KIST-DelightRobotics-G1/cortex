@@ -234,3 +234,103 @@ def test_late_state_from_old_plan_is_ignored():
     h.plan('p1', CUCUMBER[:1])
     h.state('nav', ex.DONE, 'p0', 0)              # stale report from a previous plan
     assert h.x.phase == 'RUNNING' and h.x._st == 'ACCEPT'
+
+
+# Bounded object-presence prechecks [SYS-REQ-44]. No module dispatch until verified.
+def waiting_harness(detector=None):
+    return Harness(detector or (lambda t: (False, '')),
+                   ex.Params(detector_fail_open=False, precheck_timeout_s=1.0, precheck_retry_s=.1))
+
+
+def begin_pick(h, pid='p1'):
+    h.x.heard(pid, '오이')
+    h.plan(pid, [('pick', ['cucumber'])])
+
+
+def test_precheck_recovers_and_sends_once_without_resetting_deadline():
+    h = waiting_harness()
+    begin_pick(h)
+    assert h.x._st == 'PRECHECK' and not h.cmds
+    h.advance(.6)
+    assert not h.cmds
+    h.detector = lambda t: (True, 'cucumber .8')
+    h.advance(.1)
+    assert h.cmds == [('vla', 0, 'pick', 'p1')]
+    h.state('vla', ex.RUNNING, 'p1', 0)
+    h.advance(.1)
+    assert len(h.cmds) == 1
+
+
+def test_precheck_persistent_absence_stops_at_deadline_and_never_late_dispatches():
+    h = waiting_harness()
+    begin_pick(h)
+    h.t = 1.0
+    h.x.tick()
+    assert not h.cmds and h.x.phase == 'IDLE'
+    assert any('precheck_timeout' in d for _, _, _, d in h.statuses)
+    h.detector = lambda t: (True, '')
+    h.advance(.3)
+    assert not h.cmds
+
+
+def test_precheck_done_before_dispatch_cannot_advance():
+    h = waiting_harness()
+    begin_pick(h)
+    h.state('vla', ex.DONE, 'p1', 0)
+    assert h.x._st == 'PRECHECK' and not h.cmds
+
+
+def test_precheck_user_stop_needs_no_module_cancel_or_done():
+    h = waiting_harness()
+    begin_pick(h)
+    h.x.stop()
+    assert h.x.phase == 'IDLE' and not h.cancels and not h.cmds
+    h.detector = lambda t: (True, '')
+    h.advance(.5)
+    assert not h.cmds
+
+
+def test_precheck_new_plan_preempts_without_waiting_for_unsent_vla():
+    h = waiting_harness()
+    begin_pick(h)
+    h.x.heard('p2', '테이블로')
+    h.plan('p2', [('move_to', ['table'])])
+    assert h.cmds == [('nav', 0, 'move_to', 'p2')] and not h.cancels
+
+
+def test_precheck_unavailable_is_distinct_from_absent_and_can_recover():
+    h = waiting_harness(lambda t: (False, 'insufficient_frames'))
+    begin_pick(h)
+    assert h.statuses[-1][-1] == 'precheck_wait: insufficient_frames'
+    h.t = 1.0
+    h.x.tick()
+    assert any('확인할 수 없어' in s for s in h.says) and not h.cmds
+
+
+def test_precheck_unsupported_target_fails_immediately():
+    h = waiting_harness(lambda t: (False, 'unsupported_class'))
+    begin_pick(h)
+    assert h.x.phase == 'IDLE' and not h.cmds
+    assert any('unsupported_class' in d for _, _, _, d in h.statuses)
+
+
+def test_precheck_response_after_deadline_does_not_dispatch():
+    h = waiting_harness()
+    def slow(target):
+        h.t = 1.1
+        return True, 'late positive'
+    h.detector = slow
+    begin_pick(h)
+    assert h.x.phase == 'IDLE' and not h.cmds
+
+
+def test_precheck_queries_are_rate_limited():
+    queries = []
+    h = waiting_harness(lambda t: (queries.append(t) and True, 'no_frame'))
+    begin_pick(h)
+    h.t = .05
+    h.x.tick()
+    assert len(queries) == 1
+    h.t = .1
+    h.x.tick()
+    assert len(queries) == 2

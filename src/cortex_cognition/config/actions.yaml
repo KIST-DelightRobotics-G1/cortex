@@ -69,6 +69,7 @@ precheck:
   unlock: object
 
 phrases:
+  precheck_unavailable: "{ko}의 존재를 확인할 수 없어 작업을 중단합니다."
   ack:                "네."
   unknown_place:      "그곳은 아직 갈 수 없습니다."
   unsupported_action: "그 동작은 아직 할 수 없습니다."

@@ -13,13 +13,14 @@ Contract implemented: Subtask_state_interface_spec v0.1
 Phases
     IDLE       nothing running
     PLANNING   PlanRequest sent, waiting for the first PlanStep (or a reply)
-    RUNNING    a step is dispatched (sub-state in `_st`: ACCEPT | RUN | WAIT_STEP)
+    RUNNING    checking or executing a step (sub-state in `_st`: PRECHECK | ACCEPT | RUN | WAIT_STEP)
     STOPPING   cancel sent / deferred; waiting for the module to reach IDLE
     CONFIRM    a confirm question is pending — next utterance answers it
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -47,6 +48,8 @@ class Params:
     cancel_ack_s: float = 0.5
     safe_stop_timeout_s: dict = field(default_factory=lambda: {'nav': 3.0, 'vla': 10.0})
     plan_timeout_s: float = 20.0          # PlanRequest → first line
+    precheck_timeout_s: float = 0.0      # 0 preserves one-shot demo behavior
+    precheck_retry_s: float = 0.1        # rate-limited by the executor tick
     detector_fail_open: bool = True       # detector unavailable → proceed (only "not found" blocks)
 
 
@@ -91,6 +94,9 @@ class Executor:
         self.cfg = cfg
         self.p = ports
         self.prm = params or Params()
+        if (not math.isfinite(self.prm.precheck_timeout_s) or self.prm.precheck_timeout_s < 0
+                or not math.isfinite(self.prm.precheck_retry_s) or self.prm.precheck_retry_s <= 0):
+            raise ValueError('invalid precheck retry settings')
         self.mod = {'nav': ModuleView(), 'vla': ModuleView()}
         self._reset()
 
@@ -102,9 +108,11 @@ class Executor:
         self.steps: dict[int, Step] = {}
         self.count = -1                 # from END; -1 until known
         self.cur = -1                   # current step index
-        self._st = ''                   # ACCEPT | RUN | WAIT_STEP
+        self._st = ''                   # PRECHECK | ACCEPT | RUN | WAIT_STEP
         self._t = 0.0                   # timestamp of the current sub-state entry
         self._retries = 0
+        self._precheck_next = 0.0
+        self._precheck_detail = ''
         self._pending: Optional[dict] = None   # plan waiting to start after a stop
         self._stop_reason = ''
         self._confirm_summary = ''
@@ -279,7 +287,13 @@ class Executor:
             return
         if self.phase == 'RUNNING' and st is not None:
             m = self.mod[st.exec]
-            if self._st == 'ACCEPT':
+            if self._st == 'PRECHECK':
+                if now - self._t >= self.prm.precheck_timeout_s:
+                    self._precheck_failed(planner.precheck_target(self.cfg, st.action, st.args),
+                                          self._precheck_detail or 'not_visible', timeout=True)
+                elif now >= self._precheck_next:
+                    self._check_precondition()
+            elif self._st == 'ACCEPT':
                 if now - self._t > self.prm.accept_timeout_s:
                     if self._retries < self.prm.accept_retries:
                         self._retries += 1
@@ -315,26 +329,52 @@ class Executor:
         return None
 
     def _dispatch(self, index: int) -> None:
-        st = self.steps[index]
         self.cur = index
+        self._st, self._t = 'PRECHECK', self.p.now()
+        self._precheck_detail = ''
+        self._check_precondition()
+
+    def _check_precondition(self) -> None:
+        st = self._cur()
         target = planner.precheck_target(self.cfg, st.action, st.args)
         if target:
             found, detail = self.p.check_target(target)
+            now = self.p.now()
+            # A synchronous service response arriving after the deadline cannot dispatch.
+            if self.prm.precheck_timeout_s > 0 and now - self._t >= self.prm.precheck_timeout_s:
+                self._precheck_failed(target, detail or 'not_visible', timeout=True)
+                return
             ko = planner.ko_name(self.cfg, target)
             if found:
-                self.p.trace(T_GROUND, self.plan_id, index, f'{ko} 확인됨', detail)
+                self.p.trace(T_GROUND, self.plan_id, st.index, f'{ko} 확인됨', detail)
             elif detail and self.prm.detector_fail_open:
-                self.p.trace(T_GROUND, self.plan_id, index, f'{ko} 확인 불가 · 진행', detail)
+                self.p.trace(T_GROUND, self.plan_id, st.index, f'{ko} 확인 불가 · 진행', detail)
             else:
-                self.p.trace(T_GROUND, self.plan_id, index, f'{ko} 보이지 않음', detail)
-                self.p.say(planner.phrase(self.cfg, 'not_visible', target))
-                self._abandon(f'precheck: {target} not visible')
+                terminal = detail in ('unsupported_class', 'unknown_target', 'invalid_request')
+                if self.prm.precheck_timeout_s > 0 and not terminal:
+                    reason = detail or 'not_visible'
+                    if reason != self._precheck_detail:
+                        self.p.trace(T_GROUND, self.plan_id, st.index, f'{ko} 확인 대기', reason)
+                        self._status(S_RUNNING, 'precheck_wait: ' + reason)
+                    self._precheck_detail = reason
+                    self._precheck_next = now + self.prm.precheck_retry_s
+                    return
+                self._precheck_failed(target, detail or 'not_visible')
                 return
         self._st, self._t, self._retries = 'ACCEPT', self.p.now(), 0
         self.p.send_cmd(st.exec, st, self.plan_id)
         self.p.say(st.say)
-        self.p.trace(T_STEP_START, self.plan_id, index, st.say, '')
+        self.p.trace(T_STEP_START, self.plan_id, st.index, st.say, '')
         self._status(S_RUNNING)
+
+    def _precheck_failed(self, target: str, detail: str, timeout: bool = False) -> None:
+        ko = planner.ko_name(self.cfg, target)
+        title = f'{ko} 확인 시간 초과' if timeout else f'{ko} 확인 실패'
+        self.p.trace(T_GROUND, self.plan_id, self.cur, title, detail)
+        key = 'not_visible' if detail == 'not_visible' else 'precheck_unavailable'
+        self.p.say(planner.phrase(self.cfg, key, target))
+        reason = 'precheck_timeout' if timeout else 'precheck'
+        self._abandon(f'{reason}: {target}: {detail}')
 
     def _advance(self) -> None:
         nxt = self.cur + 1
@@ -373,6 +413,11 @@ class Executor:
             self._pending = None
         st = self._cur()
         self._stop_reason = reason
+        if self.phase == 'RUNNING' and self._st == 'PRECHECK':
+            self.p.trace(T_CANCEL, self.plan_id, self.cur, '확인 대기 중단', reason)
+            self._status(S_PREEMPTED, reason)
+            self._finish_stop()  # No module command has been sent; no cancel/DONE wait.
+            return
         if st is None or self._st == 'WAIT_STEP' or self.phase != 'RUNNING':
             self._finish_stop()
             return

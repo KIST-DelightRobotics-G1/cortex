@@ -26,7 +26,7 @@ STT turns sound into symbols (perception), TTS is the robot acting (action).
 |---|---|---|---|
 | 1 | `g1_onboard_msgs` | — | Shared interfaces submodule (SSOT) — **do not fork** |
 | 2 | `cortex_msgs` | — | Cortex-internal: `PlanRequest` / `PlanStep` (LLM stream), `SubtaskCmd` / `SubtaskState` (nav·VLA contract, spec v0.1), `CheckTarget` srv, `TraceEvent` (display), `TaskStatus` |
-| 3 | `cortex_perception` | **인지** | `stt_node` (speech-band filter → Google STT → transcript, echo-cancelled), `detector_node` (YOLO presence check service; `backend: always` stub until the real detector lands) |
+| 3 | `cortex_perception` | **인지** | `stt_node` (speech-band filter → Google STT → transcript, echo-cancelled), `detector_node` (YOLO presence check service; local fine-tuned weights via `cortex_yolo.launch.py`; default `always` remains a demo stub) |
 | 4 | `cortex_cognition` | **상위 추론** | `llm_node` (utterance → streamed subtask lines, validated against `config/actions.yaml`), `orchestrator_node` (`planner_mode: llm` executes the stream over SubtaskCmd/State; `static` runs JSON5 scenarios) |
 | 5 | `cortex_action` | **제어** | `tts_node` (CLOVA Voice → 16 kHz `AudioPCM`, cancelable) |
 | 6 | `cortex_bringup` | — | Top-level launch + params |
@@ -116,6 +116,9 @@ Parameters (topics, tick rate, cancel timeout) live in
 
 ---
 
+For local refrigerator/cucumber weights, launch settings and offline verification, see
+[Detector integration](docs/detector_integration.md).
+
 ## DDS / domain
 
 `env.sh` sets `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`, `ROS_DOMAIN_ID=1` (the **bridge**
@@ -147,7 +150,7 @@ Each `TODO(REQ-XX) [TASK-XX]` in code links to the matching Notion page.
 |---|---|
 | Gearsonic Handler interface | `navigation` / `vla` connector dispatch + cancel (stubs) |
 | Handler `CommandStatus` publishing | real stop-confirmation (`_stopped`, `assume_stopped=false`) |
-| Real detector | `detector_node` `backend: yolo` (YOLO26s; `cucumber` needs a fine-tuned weight) |
+| Camera / ROS hardware validation | Local YOLO26s/YOLO26x weight integration is implemented; DDS and live-camera validation remain pending |
 | nav-planner / VLA runner SubtaskCmd/State | executor runs against `mock_module_node` until then |
 | `kist-ext-sensor-io` | owns the `/bridge/*` audio publishers. We follow the ICD names; if that repo picks different ones, change `cortex_params.yaml` — not code |
 
@@ -157,8 +160,8 @@ Each `TODO(REQ-XX) [TASK-XX]` in code links to the matching Notion page.
 
 PRs are squash-merged to `main`. Conventions enforced in CI:
 
-- Branch name: `TASK-{number}` (Notion-linked work) or `chore/{description}` (non-task housekeeping)
-- PR title: `[TASK-{number}] <type>(<scope>)?: <subject>` or `[chore] <type>(<scope>)?: <subject>`
+- Branch name: `SYS-REQ-{number}[-description]` (SYS-REQ-linked work) or `chore/{description}` (non-task housekeeping)
+- PR title: `[SYS-REQ-{number}] <type>(<scope>)?: <subject>` or `[chore] <type>(<scope>)?: <subject>`
   (Conventional Commits, lowercase casing)
 
 ---
@@ -166,3 +169,5 @@ PRs are squash-merged to `main`. Conventions enforced in CI:
 ## License
 
 Apache-2.0
+
+Selected YOLO26s continued-model deployment and bounded prechecks: [v3 profile](docs/detector_v3.md).

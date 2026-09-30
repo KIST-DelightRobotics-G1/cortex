@@ -1,7 +1,7 @@
 # orchestrator_node -> detector_node. "Is <target> visible right now?"
 # Answered from the detector's rolling window of recent frames, not from a
-# fresh inference, so the call returns in a few ms and a single flickering
-# frame does not flip the answer.
+# fresh inference, so the call returns without starting fresh inference. A majority window
+# reduces flicker; it does not guarantee stable decisions.
 
 string  target           # vocabulary key: fridge_door | cucumber | user | ...
                          # detector_node maps it to YOLO class names via its params
@@ -16,4 +16,6 @@ float32 cy
 float32 w
 float32 h
 builtin_interfaces/Time stamp   # frame time of the match
-string  detail           # "" | "stale" | "no_frame" | "unknown_target" | "model_not_loaded"
+string  detail           # "" = ordinary verdict; "stub" = demo backend
+                        # no_frame | stale | insufficient_frames | unknown_target
+                        # unsupported_class | model_not_loaded | inference_error | invalid_request

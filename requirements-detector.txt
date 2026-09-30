@@ -1,0 +1,3 @@
+# Install separately on the inference workstation. Does not upgrade base ROS deps.
+# This is the Ultralytics version used to load/evaluate the supplied YOLO26 weights.
+ultralytics==8.4.154
