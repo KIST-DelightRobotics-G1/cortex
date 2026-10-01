@@ -26,5 +26,9 @@ openai>=1.0
 
 # --- detector_node (cortex_perception) — optional; without it CheckTarget answers model_not_loaded
 # pip install -r requirements-detector.txt  # optional YOLO26 backend, pinned separately
+# --- ext-sensor-io camera: H.264 decode (gui_bridge / detector) and JPEG for the display ---
+av>=12
+pillow>=10
+
 # --- gui_bridge_node ---
 websockets>=12

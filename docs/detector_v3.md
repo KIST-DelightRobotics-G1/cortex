@@ -3,7 +3,9 @@
 This profile connects **YOLO26s 3차 9/30 영상 기반 파인튜닝 (2차 모델 연속 학습)**
 to the existing LLM-mode object-presence precheck. It does not verify door state,
 reachability, graspability or task completion. Subtask/CheckTarget message fields
-are unchanged. The VLA runner still owns DONE/FAILED.
+are unchanged. The VLA runner still owns DONE/FAILED; the next command waits for its IDLE.
+
+Latest-main integration results: [local verification](detector_main_verification.md).
 
 ## Run on the workstation
 
@@ -24,6 +26,11 @@ ros2 launch cortex_bringup cortex_yolo.launch.py \
 Omit `detector_only:=true` to start the Cortex node graph. Motion modules are
 external; this launch does not provide the camera bridge or VLA runner. Configure
 camera topic/transport and actual LLM backend in `cortex_params.yaml` for the site.
+Current defaults use domain 0 and `kist_msgs/CompressedColorFrame` on
+`/kist/camera/head/color/h264`. Install `requirements.txt` (including PyAV) and
+`requirements-detector.txt`; the standard Docker image alone omits YOLO. A container
+also needs the selected model mounted at the path passed to `model`.
+The full YOLO launch includes the latest main's `speaker_node`.
 The ordinary `cortex.launch.py`/demo profiles still use the existing stub settings;
 the dedicated YOLO launch now defaults to this versioned v3 profile. Use
 `profile:=fridge_detector.yaml` explicitly to reproduce the earlier detector profile.
@@ -32,7 +39,12 @@ under the v3 profile. `device:=cpu` is available without CUDA.
 
 ## Decision sequence
 
-1. A single detector worker processes recent camera frames at a target 8 Hz.
+1. H.264 packets are decoded in order by one camera callback. Inference samples
+   the latest decoded frame at a target 8 Hz; it does not run on every packet.
+   The decoded frame's source PTS is retained even if the codec buffers/reorders
+   frames. Missing decoded timestamps cannot count as fresh evidence. Source and
+   receiver clocks must agree; a source clock reset requires restarting the node.
+   Raw and compressed-image transports remain available.
 2. Candidate boxes use confidence >= 0.25. Each frame contributes at most one vote
    per target. The recent 0.6-second window needs at least 3 distinct frames.
 3. An object passes only if a strict majority has confidence >= 0.25 **and the
@@ -46,6 +58,10 @@ under the v3 profile. `device:=cpu` is available without CUDA.
    requests fail immediately. Fail-open is disabled.
 6. A user stop or replacement plan can end PRECHECK without waiting for a module
    that has received no command. DONE received before dispatch cannot advance it.
+7. After dispatch, DONE enters WAIT_IDLE; only the module's IDLE permits the next
+   precheck/command. Missing IDLE aborts after the existing 1-second idle timeout.
+   A stop during an active command sends cancel and waits for module IDLE. The
+   PRECHECK-only exception applies before any command has been sent for that step.
 
 The deadline uses the executor clock; timer granularity and a service call already
 in progress can delay the failure notification. Responses arriving after the
@@ -84,10 +100,17 @@ intervals. It validates the selected weight hash and inference configuration.
 
 The subtask replay uses real Cortex planner validation, presence policy and executor.
 It injects the plan `open(fridge_door) -> pick(cucumber) -> close(fridge_door)`.
-VLA heartbeats and completion times are **mocked**, with manual scenario boundaries:
-open DONE at 10.6 s, pick DONE at 23.8 s, close DONE at 25.2 s. Separate scenarios
-request pick too early, omit completion, or stop during PRECHECK. These are software
-integration checks, not successful robot trials or estimated action durations.
+The installed `plan_rewrites.yaml` adds the current main's demo-only `approach`
+and `step_back`, giving `open -> approach -> pick -> step_back -> close`.
+These inserted actions retain main's existing behavior without an added object
+precheck. Original open/pick/close still query refrigerator/cucumber/refrigerator.
+VLA heartbeats, DONE and cleanup IDLE are **mocked**, with manual DONE times of
+1.0 / 10.3 / 23.0 / 23.5 / 25.2 seconds and an IDLE 0.3 seconds after each DONE.
+Separate scenarios request pick too early, omit DONE, omit IDLE after DONE, or stop
+during PRECHECK. These are software integration checks, not successful robot trials
+or estimated action durations. The rewriter can be disabled via
+`plan_rewrites_path: ''` in the orchestrator configuration for deployments that do
+not use those demo rules.
 
 The presence comparison evaluates queries at completed inference timestamps,
 roughly 8 Hz, against visibility at those timestamps. Counts differ from the

@@ -1,7 +1,7 @@
 """tts_node — Text-to-Speech [REQ-29]. Port of the workstation TTSProvider.
 
     ActionCmd (/cortex/tts/say)  -> Clova REST -> resample 16k -> AudioPCM
-                                                                  (/bridge/cmd/audio_out)
+                                                                  (/cortex/tts/audio)
 
 PCM cache + prefetch (SYS-REQ-29 latency): the sentences this robot says are
 short and repeat (LLM `say` lines, fixed phrases). Every synthesized sentence is
@@ -13,8 +13,8 @@ every PlanStep as it arrives, seconds before that step starts.
 
 Open-loop: the orchestrator fires ActionCmd; this node synthesizes and publishes,
 and reports no status back. Synthesis runs on a worker thread (one asyncio.run per
-call) so the executor never blocks on the cloud round-trip. Barge-in / E-STOP
-cancel the in-flight synthesis.
+call) so the executor never blocks on the cloud round-trip. Barge-in cancels
+the in-flight synthesis.
 
 PC resamples Clova 24 kHz → 16 kHz (REQ-29). Echo-cancel is passive: NX
 speaker_node raises SpeakerState.playing, stt_node mutes on it. Credentials
@@ -39,13 +39,13 @@ from typing import Optional
 import numpy as np
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool
 
 from cortex_msgs.msg import ActionCmd
-from g1_onboard_msgs.msg import AudioPCM, EstopFlag
+from g1_onboard_msgs.msg import AudioPCM
 
 
 # ===========================================================================
@@ -81,7 +81,7 @@ class TTSConfig:
 # ===========================================================================
 class TtsNode(Node):
     # AudioPCM per-message payload limit is 65500 B; 32000 B ~= 1.0s @ 16kHz mono
-    # int16 leaves headroom. NX speaker_node consumes a chunk queue and reports
+    # int16 leaves headroom. speaker_node consumes a chunk queue and reports
     # progress via SpeakerState.current_chunk_id / queue_depth — one utterance
     # per message is explicitly NOT the design.
     _PUBLISH_CHUNK_BYTES = 32000
@@ -92,11 +92,10 @@ class TtsNode(Node):
         # --- parameters -> TTSConfig --------------------------------------
         self.declare_parameter('say_topic', '/cortex/tts/say')
         self.declare_parameter('barge_in_topic', '/cortex/tts/stop')
-        self.declare_parameter('audio_out_topic', '/bridge/cmd/audio_out')
+        self.declare_parameter('audio_out_topic', '/cortex/tts/audio')     # -> speaker_node
         self.declare_parameter('prefetch_topic', '/cortex/tts/prefetch')   # upcoming say lines (urgent)
         self.declare_parameter('warmup_topic', '/cortex/tts/warmup')       # boot-time phrase list (background)
         self.declare_parameter('cache_dir', os.path.expanduser('~/.cache/cortex_tts'))
-        self.declare_parameter('estop_topic', '/bridge/safety/estop')
         self.declare_parameter('backend', TTSBackend.NAVER_CLOVA.value)
         self.declare_parameter('language_code', 'ko-KR')
         self.declare_parameter('sample_rate_hz', 16000)
@@ -118,7 +117,6 @@ class TtsNode(Node):
         )
 
         # --- state ---------------------------------------------------------
-        self._estop_active = False
         self._inflight_task: Optional[asyncio.Task] = None
         self._inflight_loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -148,8 +146,6 @@ class TtsNode(Node):
             callback_group=grp)
         self.create_subscription(
             Bool, g('barge_in_topic').value, self._on_barge_in, 10, callback_group=grp)
-        self.create_subscription(
-            EstopFlag, g('estop_topic').value, self._on_estop_msg, 10, callback_group=grp)
 
         # Synthesis runs here, off the executor thread. Prefetch has its own
         # worker so warming the cache never delays a live say; plan-step lines
@@ -176,6 +172,8 @@ class TtsNode(Node):
     def _enqueue_prefetch(self, text: str, priority: int) -> None:
         """Warm the cache for a sentence that will be said later (no playback)."""
         text = (text or '').strip()
+        if not self._client_id or not self._client_secret:
+            return                      # nothing to synthesize with (warned once at start-up)
         if text and self._cache_path(text) and not os.path.exists(self._cache_path(text)):
             self._prefetch_seq += 1
             self._prefetch_q.put((priority, self._prefetch_seq, text))
@@ -190,19 +188,6 @@ class TtsNode(Node):
         """Barge-in: user interrupted, cut playback synthesis immediately."""
         if msg.data:
             self.get_logger().info('barge-in: cancelling in-flight synthesis')
-            self.cancel()
-
-    def _on_estop_msg(self, msg: EstopFlag) -> None:
-        """E-STOP: cancel current synth; gate future say requests.
-
-        Clearing E-STOP does NOT auto-resume the killed utterance (a G1 staying
-        audible during E-STOP would confuse the operator) — it just re-allows
-        future synthesize() calls.
-        """
-        self._estop_active = bool(msg.active)
-        self.get_logger().info(
-            f"E-STOP {'ACTIVE' if self._estop_active else 'CLEARED'} (reason={msg.reason})")
-        if self._estop_active:
             self.cancel()
 
     # --- cache --------------------------------------------------------------
@@ -259,12 +244,9 @@ class TtsNode(Node):
     async def synthesize(self, text: str, t_req: Optional[float] = None) -> None:
         """Synthesize ``text`` and publish the PCM stream (fire-and-forget).
 
-        Gate on E-STOP, POST to Clova, decode WAV, resample, publish. On
-        timeout / error / cancel: log + drop (no retry, no status — open-loop).
+        POST to Clova, decode WAV, resample, publish. On timeout / error /
+        cancel: log + drop (no retry, no status — open-loop).
         """
-        if self._estop_active:
-            self.get_logger().info(f'synthesize: E-STOP active — aborting (text={text!r})')
-            return
         text = (text or '').strip()
         if not text:
             return
@@ -285,16 +267,12 @@ class TtsNode(Node):
             pcm = await self._fetch_pcm(text)
             if pcm is None:
                 return
-            # E-STOP / barge-in may have fired during the network round-trip.
-            if self._estop_active:
-                self.get_logger().info('synthesize: E-STOP fired mid-request — dropping audio')
-                return
             self._publish(pcm)
             self.get_logger().info(
                 f'say {text!r}: cache miss, first publish +{(time.perf_counter() - t_req) * 1000:.0f} ms')
             self._cache_put(text, pcm)
         except asyncio.CancelledError:
-            self.get_logger().info('synthesize: cancelled (barge-in / E-STOP / stop)')
+            self.get_logger().info('synthesize: cancelled (barge-in / stop)')
             raise
         except Exception:  # noqa: BLE001 - log + drop, no retry (TTSConfig policy)
             self.get_logger().error(f'synthesize: failed; dropping (text={text!r})' + chr(10) + traceback.format_exc())
@@ -303,7 +281,7 @@ class TtsNode(Node):
             self._inflight_loop = None
 
     def cancel(self) -> None:
-        """Cancel any in-flight synthesis (barge-in / E-STOP / shutdown)."""
+        """Cancel any in-flight synthesis (barge-in / shutdown)."""
         task, loop = self._inflight_task, self._inflight_loop
         if task is None or loop is None:
             return
@@ -317,8 +295,8 @@ class TtsNode(Node):
     def is_synthesizing(self) -> bool:
         """True while a request is in flight to the cloud TTS.
 
-        For "is the NX speaker actually emitting sound right now?", read
-        SpeakerState.playing instead — that flag is raised by NX speaker_node
+        For "is the speaker actually emitting sound right now?", read
+        SpeakerState.playing instead — that flag is raised by speaker_node
         based on actual playback, not PC-side synthesis status.
         """
         return self._inflight_task is not None
@@ -413,11 +391,12 @@ def main(args=None) -> None:
     executor.add_node(node)
     try:
         executor.spin()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():                  # launch's SIGINT may have shut the context down already
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

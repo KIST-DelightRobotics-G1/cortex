@@ -79,6 +79,7 @@ phrases:
   module_lost:        "{ko} 모듈이 응답하지 않습니다."
   plan_error:         "죄송합니다. 잘 이해하지 못했습니다."
   stopped:            "멈춥니다."
+  stop_failed:        "멈추지 못했습니다. 로봇을 확인해 주세요."
 
 # few-shot: 동사·물건·상황이 서로 다르고 테스트 발화와 겹치지 않는 6개
 examples:

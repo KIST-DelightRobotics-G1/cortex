@@ -28,14 +28,19 @@ slow client can never back-pressure the ROS side.
 """
 
 import asyncio
+import io
 import json
 import threading
+import time
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, Image
 
 from cortex_msgs.msg import TaskStatus, TraceEvent
+from kist_msgs.msg import CompressedColorFrame
 
 _KIND_NAME = {
     TraceEvent.HEARD: 'HEARD', TraceEvent.THINKING: 'THINKING',
@@ -93,10 +98,11 @@ class GuiBridgeNode(Node):
         super().__init__('gui_bridge_node')
 
         self.declare_parameter('status_topic', '/cortex/task_status')
-        self.declare_parameter('camera_topic', '/bridge/sensors/camera/color/compressed')
-        # compressed: forward JPEG bytes as-is (cheap). raw: encode Image -> JPEG
-        # (needs pillow+numpy). none: status-only (renderer shows NO SIGNAL).
-        self.declare_parameter('camera_transport', 'compressed')
+        self.declare_parameter('camera_topic', '/kist/camera/head/color/h264')
+        # h264: ext-sensor-io CompressedColorFrame, decoded and re-encoded as JPEG
+        # (needs av+pillow). compressed: forward JPEG bytes as-is. raw: encode
+        # Image -> JPEG (pillow+numpy). none: status-only (renderer shows NO SIGNAL).
+        self.declare_parameter('camera_transport', 'h264')
         self.declare_parameter('ws_host', '0.0.0.0')
         self.declare_parameter('ws_port', 8081)
         self.declare_parameter('stream_rate_hz', 15.0)
@@ -165,13 +171,31 @@ class GuiBridgeNode(Node):
     def _subscribe_camera(self, topic: str) -> None:
         if self._transport == 'none':
             return
-        if self._transport == 'compressed':
+        if self._transport == 'h264':
+            from cortex_perception.ext_sensor import H264Decoder
+            self._decoder = H264Decoder()
+            self._jpeg_t = 0.0
+            self.create_subscription(CompressedColorFrame, topic, self._on_h264, qos_profile_sensor_data)
+        elif self._transport == 'compressed':
             self.create_subscription(CompressedImage, topic, self._on_compressed, 10)
         elif self._transport == 'raw':
             self.create_subscription(Image, topic, self._on_raw, 10)
         else:
             self.get_logger().warning(
                 f'unknown camera_transport {self._transport!r}; camera disabled')
+
+    def _on_h264(self, msg: CompressedColorFrame) -> None:
+        # Every frame is decoded (H.264 frames build on earlier ones); only the
+        # newest becomes a JPEG, at most stream_rate_hz times a second.
+        frame = self._decoder.decode(msg.data, msg.is_keyframe)
+        now = time.monotonic()
+        if frame is None or now - self._jpeg_t < 1.0 / self._rate:
+            return
+        buf = io.BytesIO()
+        frame.to_image().save(buf, format='JPEG', quality=70)
+        self._frame = buf.getvalue()
+        self._frame_seq += 1
+        self._jpeg_t = now
 
     def _on_compressed(self, msg: CompressedImage) -> None:
         # Already JPEG/PNG on the wire — forward the bytes untouched.
@@ -287,12 +311,13 @@ def main(args=None) -> None:
     node = GuiBridgeNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.request_shutdown()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():                  # launch's SIGINT may have shut the context down already
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

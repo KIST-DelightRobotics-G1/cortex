@@ -7,6 +7,8 @@ still use the explicit `always` stub; select the real profile below.
 
 For the selected 3rd continued model, use [the v3 profile](detector_v3.md).
 The settings and results below describe the earlier profile.
+For adaptation to the latest main's H.264 input and DONE/IDLE lifecycle, see
+[main integration verification](detector_main_verification.md).
 
 ## Install and launch
 
@@ -30,8 +32,9 @@ the actual bridge publisher. Weights are external assets, not committed binaries
 
 - A single inference worker samples the latest camera frame, targeting 8 Hz.
   Actual throughput depends on inference latency; frames can be skipped.
-- Camera subscription uses best-effort QoS, depth 1. Raw `rgb8`/`bgr8` images
-  support row padding; compressed images are decoded to BGR.
+- Camera subscription uses best-effort QoS, depth 1. H.264 from ext-sensor-io is
+  now the default, decoded serially while retaining each decoded frame's PTS.
+  Raw `rgb8`/`bgr8` images support row padding; compressed images decode to BGR.
 - Published boxes are normalized `cx, cy, w, h` in [0, 1], with the weight's
   class label and confidence. Image source time/frame ID are retained.
 - Inference retains confidence >= 0.25. Presence defaults to confidence >= 0.4

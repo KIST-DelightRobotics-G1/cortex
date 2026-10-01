@@ -25,7 +25,7 @@ import threading
 
 import rclpy
 from ament_index_python.packages import get_package_share_directory
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 
 from cortex_msgs.msg import PlanRequest, PlanStep
@@ -223,11 +223,12 @@ def main(args=None) -> None:
     ex.add_node(node)
     try:
         ex.spin()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():                  # launch's SIGINT may have shut the context down already
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

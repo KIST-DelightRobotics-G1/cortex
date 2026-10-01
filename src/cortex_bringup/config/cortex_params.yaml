@@ -1,14 +1,14 @@
 # Shared parameters for the cortex node graph.
-# Topic names on /bridge/* must match what the onboard stack publishes on the
-# shared DDS bridge domain (post-comm_bridge redesign).
+# DDS domain 0, shared with ext-sensor-io, gearsonic, navigation-planner and
+# vla-inference. Mic and camera come straight from ext-sensor-io (kist_msgs).
 
 stt_node:
   ros__parameters:
-    # /bridge/* names follow the ICD; kist-ext-sensor-io owns the publisher.
-    # If that repo lands on different names, change them here — not in code.
-    audio_topic: /bridge/sensors/audio_pcm
-    speaker_state_topic: /bridge/audio/speaker_state   # comm_bridge outbound (was /bridge/sensors/* — mismatch)
-    estop_topic: /bridge/safety/estop
+    # ext-sensor-io mic (kist_msgs/AudioChunk, interleaved S16_LE). The reSpeaker
+    # XVF3800 array is 16 kHz x 6: channel 0 is its processed (beamformed) output.
+    audio_topic: /kist/mic/array/audio
+    mic_channel: 0
+    speaker_state_topic: /cortex/speaker/state         # speaker_node: mic muted while it plays
     transcript_topic: /cortex/stt/transcript
     backend: google_cloud        # google_cloud (v1) | google_cloud_v2 | dummy (no credentials)
     # v1 'default' is a long-form model: it never endpoints on its own and the
@@ -20,7 +20,7 @@ stt_node:
     location: global             # v2 endpoint region; chirp_3 is not served everywhere (try us-central1)
     speech_end_timeout_s: 0.5    # v2: flush the final result this long after speech stops (0 = server default)
     language_code: ko-KR
-    sample_rate_hz: 16000        # AudioPCM locked format
+    sample_rate_hz: 16000        # STT input rate; mic chunks are resampled to it
     interim_results: false       # false = publish only is_final transcripts
     highpass_hz: 120.0           # removes low-freq vibration / DC
     lowpass_hz: 5500.0           # preserves Korean fricatives (ㅅ/ㅎ/ㅊ)
@@ -32,8 +32,7 @@ tts_node:
   ros__parameters:
     say_topic: /cortex/tts/say          # ActionCmd (orchestrator -> tts)
     barge_in_topic: /cortex/tts/stop
-    audio_out_topic: /bridge/cmd/audio_out
-    estop_topic: /bridge/safety/estop
+    audio_out_topic: /cortex/tts/audio            # -> speaker_node
     backend: naver_clova
     language_code: ko-KR
     sample_rate_hz: 16000        # wire format (PC resamples — REQ-29)
@@ -44,6 +43,20 @@ tts_node:
     prefetch_topic: /cortex/tts/prefetch   # upcoming say lines (urgent, ahead of warm-up)
     warmup_topic: /cortex/tts/warmup       # boot-time phrase list from the orchestrator (latched)
     cache_dir: ~/.cache/cortex_tts         # 16 kHz PCM per sentence; '' disables. Measured CLOVA TTFA p50 0.65 s → hit ~0 ms
+
+speaker_node:
+  ros__parameters:
+    # tts_node audio -> the robot's built-in speaker through the Unitree AudioClient
+    # (a DDS RPC to the G1 audio service "voice" on domain 0; see config/cyclonedds.xml
+    # DDS_ROBOT_IP). Same 16 kHz / mono / 16-bit lock as AudioPCM.
+    audio_topic: /cortex/tts/audio      # = tts_node.audio_out_topic
+    state_topic: /cortex/speaker/state  # = stt_node.speaker_state_topic
+    stop_topic: /cortex/tts/stop        # barge-in: drop what was said before it
+    max_queue_depth: 50                 # SpeakerState.queue_depth is uint8
+    app_name: cortex_tts                # AudioClient stream owner tag
+    client_timeout_s: 2.0               # reply wait per chunk; the mic stays muted meanwhile
+    lead_s: 1.5                         # max audio buffered on the robot ahead of playback
+    play_margin_s: 0.2                  # the robot starts playing a little after the send
 
 orchestrator_node:
   ros__parameters:
@@ -76,7 +89,8 @@ orchestrator_node:
     step_timeout_nav_s: 60.0
     step_timeout_vla_s: 30.0
     step_wait_s: 5.0                    # step done but next PlanStep not here yet
-    safe_stop_nav_s: 3.0                # cancel -> IDLE
+    idle_wait_s: 1.0                    # DONE -> IDLE before the next Cmd goes out
+    safe_stop_nav_s: 3.0                # cancel -> IDLE (then no new plan starts)
     safe_stop_vla_s: 10.0
     plan_timeout_s: 20.0                # PlanRequest -> first line
     # detector unavailable (no node / timeout / stale frame) -> proceed; only a real
@@ -84,6 +98,8 @@ orchestrator_node:
     detector_fail_open: true
     tts_prefetch_topic: /cortex/tts/prefetch
     tts_warmup_topic: /cortex/tts/warmup
+    # demo-only steps inserted between plan lines (config/plan_rewrites.yaml). '' = off.
+    # plan_rewrites_path: default = installed share/cortex_cognition/config/plan_rewrites.yaml
     ack_phrase: '네.'                   # said when a request goes to the LLM (idle only); '' = off
 
 llm_node:
@@ -98,8 +114,8 @@ llm_node:
 
 detector_node:
   ros__parameters:
-    camera_topic: /bridge/sensors/camera/color/compressed
-    camera_transport: compressed         # compressed | raw
+    camera_topic: /kist/camera/head/color/h264   # ext-sensor-io; not read while backend is always
+    camera_transport: h264               # h264 | compressed | raw
     detections_topic: /cortex/detections
     service: /cortex/detector/check
     backend: always                      # always = STUB (every target found) | yolo
@@ -119,8 +135,8 @@ gui_bridge_node:
     # ROS -> WebSocket egress to the display renderer (kist-drl-g1-gui, REQ-41).
     # Point the renderer at ws://<this-host>:8081 (its ?ws= query param).
     status_topic: /cortex/task_status
-    camera_topic: /bridge/sensors/camera/color/compressed
-    camera_transport: compressed   # compressed (forward JPEG) | raw (encode) | none
+    camera_topic: /kist/camera/head/color/h264
+    camera_transport: h264         # h264 (decode -> JPEG) | compressed (forward JPEG) | raw | none
     ws_host: 0.0.0.0
     ws_port: 8081                   # GUIBackground default — must match renderer
     stream_rate_hz: 15.0

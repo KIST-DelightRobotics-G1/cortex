@@ -21,7 +21,8 @@ def test_generated_message_adapter_preserves_source_time_and_raw_stride(monkeypa
             return (DetectionRecord('cucumber', .9, .5, .5, .2, .1),)
     monkeypatch.setattr(detector_node, 'YoloDetector', Backend)
     rclpy.init()
-    node = detector_node.DetectorNode(parameter_overrides=[Parameter('backend', value='yolo')])
+    node = detector_node.DetectorNode(parameter_overrides=[Parameter('backend', value='yolo'),
+                                                          Parameter('camera_transport', value='raw')])
     try:
         stamps = []
         for _ in range(3):
@@ -42,3 +43,22 @@ def test_generated_message_adapter_preserves_source_time_and_raw_stride(monkeypa
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
+
+def test_h264_callback_uses_decoded_pts_not_packet_stamp():
+    from fractions import Fraction
+    from types import SimpleNamespace
+    import av
+    import numpy as np
+    frame = av.VideoFrame.from_ndarray(np.zeros((2, 2, 3), np.uint8), format='bgr24')
+    frame.pts, frame.time_base = 100, Fraction(1, 1_000_000_000)
+    accepted = []
+    fake = SimpleNamespace(
+        _decoder=SimpleNamespace(decode=lambda *args: frame),
+        _accept_frame_data=lambda *args: accepted.append(args))
+    msg = SimpleNamespace(data=b'', is_keyframe=False, stamp_ns=200, frame_id='head')
+    detector_node.DetectorNode._on_h264(fake, msg)
+    assert accepted[0][1:] == (100, 'head')
+    frame.pts = None
+    detector_node.DetectorNode._on_h264(fake, msg)
+    assert len(accepted) == 1

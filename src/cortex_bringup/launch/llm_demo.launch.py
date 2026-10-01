@@ -5,9 +5,10 @@
 
 Arguments
     backend:=dummy|gemini|openai   LLM backend (gemini: GOOGLE_API_KEY, openai: OPENAI_API_KEY)
-    speech:=true                   add stt_node + tts_node — real voice in/out through the
-                                   /bridge/* audio topics (needs GOOGLE_APPLICATION_CREDENTIALS_B64
-                                   and NCP_CLOVA_CLIENT_ID / _SECRET; nav/vla stay mocked)
+    speech:=true                   add stt_node + tts_node + speaker_node — real mic from ext-sensor-io
+                                   (/kist/mic/array/audio), TTS on the robot speaker (needs
+                                   GOOGLE_APPLICATION_CREDENTIALS_B64 and NCP_CLOVA_CLIENT_ID /
+                                   _SECRET; nav/vla stay mocked)
 
 Drive it from a terminal:
     ros2 topic pub -1 /cortex/stt/transcript std_msgs/msg/String "{data: '냉장고에서 오이 가져다줘'}"
@@ -39,9 +40,10 @@ def generate_launch_description() -> LaunchDescription:
         # backend:=gemini needs GOOGLE_API_KEY in the environment (openai: OPENAI_API_KEY)
         DeclareLaunchArgument('backend', default_value='dummy', description='dummy | gemini | openai'),
         DeclareLaunchArgument('speech', default_value='false',
-                              description='true = add stt_node + tts_node (real mic/speaker via /bridge)'),
+                              description='true = add stt_node + tts_node + speaker_node (ext-sensor-io mic, robot speaker)'),
         node('cortex_perception', 'stt_node', condition=speech),
         node('cortex_action', 'tts_node', condition=speech),
+        node('cortex_action', 'speaker_node', condition=speech),
         node('cortex_cognition', 'llm_node', extra={'backend': LaunchConfiguration('backend')}),
         node('cortex_cognition', 'orchestrator_node', extra={'planner_mode': 'llm'}),
         node('cortex_perception', 'detector_node', extra={'backend': 'always'}),

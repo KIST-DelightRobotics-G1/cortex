@@ -80,7 +80,7 @@ sudo apt-get update && sudo apt-get install -y \
 # Shared interfaces submodule
 git submodule update --init --recursive
 
-# Repo-local activation (ROS + CycloneDDS + bridge domain)
+# Repo-local activation (ROS + CycloneDDS + domain 0)
 source env.sh
 
 # Deps
@@ -119,15 +119,54 @@ Parameters (topics, tick rate, cancel timeout) live in
 For local refrigerator/cucumber weights, launch settings and offline verification, see
 [Detector integration](docs/detector_integration.md).
 
+## Docker
+
+Same pattern as `kist-gearsonic-inference` / `kist-vla-inference`: one self-contained
+image (Humble + deps + source, built and tested at image-build time) and one persistent
+named container. Any host with Docker works — no ROS install needed on the host.
+
+```bash
+docker/build.sh                                   # image: kist-cortex
+docker/run.sh                                     # shell inside, ROS already sourced
+docker/run.sh ros2 launch cortex_bringup cortex.launch.py
+docker/run.sh ros2 launch cortex_bringup llm_demo.launch.py backend:=gemini speech:=true
+```
+
+- Credentials come from `.env` (`--env-file`, never baked in). Use
+  `GOOGLE_APPLICATION_CREDENTIALS_B64`; a host file path does not exist in the container.
+- `--network host`, `ROS_DOMAIN_ID=0`, `DDS_PEER_IP` as in `env.sh`. The NIC name in
+  `config/cyclonedds.xml` (`eno2`) must still match the host.
+- The TTS cache lives on the host (`~/.cache/cortex_tts`) and survives rebuilds.
+- Not in this image: detector_node's YOLO backend (runs as the `always` stub) and the
+  display renderer (cortex-gui has its own container).
+- Env file, mounts and DDS settings are fixed when the container is created — after
+  changing them, `docker rm -f kist-cortex` and run again.
+
+---
+
 ## DDS / domain
 
-`env.sh` sets `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`, `ROS_DOMAIN_ID=1` (the **bridge**
-domain shared with onboard) and points `DDS_PEER_IP` at the NX. `config/cyclonedds.xml`
-mirrors the onboard bridge-domain config (unicast peers, `AllowMulticast=false`).
+`env.sh` sets `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`, `ROS_DOMAIN_ID=0` and points
+`DDS_PEER_IP` at the NX. `config/cyclonedds.xml` discovers by **multicast**, like every
+module on the robot LAN (a unicast-only participant never meets a multicast one), with the
+NX and the G1 internal PC as extra unicast peers. No `lo` interface: with a second
+interface Cyclone sends discovery from a loopback socket and floods the log with `retcode -3`.
 
-⚠️ Onboard isolates `/onboard/*` from `/bridge/*` via **separate DDS domains**, previously
-bridged by `comm_bridge`. With `comm_bridge` deleted, onboard producers must publish directly
-on the bridge domain. Keep both `cyclonedds.xml` files and `ROS_DOMAIN_ID` in sync.
+Domain 0 is shared with ext-sensor-io, gearsonic, navigation-planner and vla-inference.
+Those modules speak plain DDS, not ROS, so the type names on the wire must be the ROS
+form (`pkg::msg::dds_::Name_`) for cortex to read them — ext-sensor-io's mic and camera
+types match `src/kist_msgs`, and the subtask contract matches `cortex_msgs`.
+
+| From ext-sensor-io | cortex reads it as | Used by |
+|---|---|---|
+| `rt/kist/mic/array/audio` | `/kist/mic/array/audio` · `kist_msgs/AudioChunk` (16 kHz × 6, channel 0 used) | stt_node |
+| `rt/kist/camera/head/color/h264` | `/kist/camera/head/color/h264` · `kist_msgs/CompressedColorFrame` (decoded with PyAV) | gui_bridge_node, detector_node |
+
+Speech out: `tts_node` → `/cortex/tts/audio` → `speaker_node` → Unitree `AudioClient.PlayStream`
+(DDS RPC to the G1 audio service `voice`) → robot speaker. `speaker_node` publishes
+`/cortex/speaker/state` so `stt_node` mutes the mic while it plays. The audio service runs
+on the G1 internal PC, listed as `DDS_ROBOT_IP` (default `192.168.123.161` — verify on the
+robot) as an extra peer next to multicast discovery.
 
 ---
 
@@ -171,3 +210,4 @@ PRs are squash-merged to `main`. Conventions enforced in CI:
 Apache-2.0
 
 Selected YOLO26s continued-model deployment and bounded prechecks: [v3 profile](docs/detector_v3.md).
+Latest-main H.264 / DONE-to-IDLE adaptation: [local verification](docs/detector_main_verification.md).

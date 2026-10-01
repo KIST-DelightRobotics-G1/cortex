@@ -16,16 +16,18 @@ Parameters
 """
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from cortex_msgs.msg import SubtaskCmd, SubtaskState
 
 # actions.yaml 의 exec 와 같아야 한다 — 여기가 좁으면 계획이 중간에 "지원하지 않음" 으로 끊긴다.
-SUPPORTED = {
-    'nav': {'move_to'},
-    'vla': {'adjust', 'close', 'empty', 'fill', 'handover', 'insert', 'lock', 'open', 'pick', 'place', 'pour', 'put_in', 'receive', 'remove', 'take_out', 'turn_off', 'turn_on', 'unlock', 'wipe'},
-}
+# Same split as the real modules: nav drives (move_to only); vla-inference refuses
+# only move_to and runs any other action from its instruction — which also covers
+# the demo verbs in plan_rewrites.yaml (approach, step_back).
+def supported(role: str, action: str) -> bool:
+    return action == 'move_to' if role == 'nav' else action != 'move_to'
 
 
 class MockModuleNode(Node):
@@ -74,7 +76,7 @@ class MockModuleNode(Node):
                 self.get_logger().info(f'cancel {m.plan_id}/{m.index}: deferred to safe point')
             return
         # new command: preempts whatever is running (spec 02 transition table)
-        if m.action not in SUPPORTED[self.role]:
+        if not supported(self.role, m.action):
             self.plan_id, self.index, self.action = m.plan_id, m.index, m.action
             self._finish(SubtaskState.FAILED, f'unsupported: action {m.action}')
             return
@@ -119,11 +121,12 @@ def main(args=None) -> None:
     node = MockModuleNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():                  # launch's SIGINT may have shut the context down already
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

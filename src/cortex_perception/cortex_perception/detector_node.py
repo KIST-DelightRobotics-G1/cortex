@@ -11,10 +11,11 @@ import time
 import numpy as np
 import rclpy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage, Image
+from kist_msgs.msg import CompressedColorFrame
 
 from cortex_msgs.msg import Detection, DetectionArray
 from cortex_msgs.srv import CheckTarget
@@ -26,8 +27,8 @@ class DetectorNode(Node):
     def __init__(self, **kwargs) -> None:
         super().__init__('detector_node', **kwargs)
         defaults = {
-            'camera_topic': '/bridge/sensors/camera/color/compressed',
-            'camera_transport': 'compressed', 'detections_topic': '/cortex/detections',
+            'camera_topic': '/kist/camera/head/color/h264',
+            'camera_transport': 'h264', 'detections_topic': '/cortex/detections',
             'service': '/cortex/detector/check', 'backend': 'always',
             'model': 'yolo26s.pt', 'model_sha256': '', 'device': '', 'rate_hz': 8.0, 'window_s': 0.6,
             'default_min_confidence': 0.4, 'infer_conf': 0.25, 'imgsz': 640,
@@ -47,8 +48,8 @@ class DetectorNode(Node):
             raise ValueError('backend must be always or yolo')
         if not math.isfinite(rate) or rate <= 0 or not 0 < infer_conf <= 1 or int(g('imgsz')) <= 0:
             raise ValueError('invalid inference settings')
-        if g('camera_transport') not in ('raw', 'compressed'):
-            raise ValueError('camera_transport must be raw or compressed')
+        if g('camera_transport') not in ('h264', 'raw', 'compressed'):
+            raise ValueError('camera_transport must be h264, raw or compressed')
         self._lock = threading.Lock()
         self._frame = None
         self._last_processed_stamp = -1
@@ -72,7 +73,15 @@ class DetectorNode(Node):
         self._infer_group = MutuallyExclusiveCallbackGroup()
         camera_qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
                                 reliability=ReliabilityPolicy.BEST_EFFORT)
-        if g('camera_transport') == 'raw':
+        if self.backend == 'always':
+            pass  # The demo stub does not decode camera frames.
+        elif g('camera_transport') == 'h264':
+            from .ext_sensor import H264Decoder
+            self._decoder = H264Decoder()
+            self._decode_group = MutuallyExclusiveCallbackGroup()
+            self.create_subscription(CompressedColorFrame, g('camera_topic'), self._on_h264,
+                                     camera_qos, callback_group=self._decode_group)
+        elif g('camera_transport') == 'raw':
             self.create_subscription(Image, g('camera_topic'), self._on_raw, camera_qos,
                                      callback_group=self._io_group)
         else:
@@ -85,6 +94,9 @@ class DetectorNode(Node):
 
     def _accept_frame(self, frame, header):
         stamp_ns = header.stamp.sec*1_000_000_000 + header.stamp.nanosec
+        self._accept_frame_data(frame, stamp_ns, header.frame_id)
+
+    def _accept_frame_data(self, frame, stamp_ns, frame_id):
         timing = frame_time(stamp_ns, self.get_clock().now().nanoseconds,
                             time.monotonic(), self.window_s, self.allow_unstamped)
         if timing is None:
@@ -93,7 +105,17 @@ class DetectorNode(Node):
         with self._lock:
             if self._frame is not None and stamp_ns <= self._frame[2]:
                 return
-            self._frame = (frame, observed_t, stamp_ns, header.frame_id)
+            self._frame = (frame, observed_t, stamp_ns, frame_id)
+
+    def _on_h264(self, message):
+        from .ext_sensor import decoded_stamp_ns
+        # Decode every packet to retain codec reference state. The decoded frame
+        # may belong to an earlier packet; never stamp it with the newest packet.
+        frame = self._decoder.decode(message.data, message.is_keyframe, message.stamp_ns)
+        if frame is not None:
+            stamp_ns = decoded_stamp_ns(frame)
+            if stamp_ns is not None:
+                self._accept_frame_data(frame.to_ndarray(format='bgr24'), stamp_ns, message.frame_id)
 
     def _on_compressed(self, message):
         try:
@@ -162,11 +184,12 @@ def main(args=None):
     executor.add_node(node)
     try:
         executor.spin()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

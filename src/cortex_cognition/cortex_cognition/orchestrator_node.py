@@ -37,7 +37,7 @@ import json5
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
@@ -49,6 +49,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
 from . import executor as ex
 from . import planner
+from . import rewrite
 
 
 # ===========================================================================
@@ -262,6 +263,9 @@ class OrchestratorNode(Node):
         self.declare_parameter('planner_mode', 'static')          # static | llm
         self.declare_parameter('actions_path', os.path.join(
             get_package_share_directory('cortex_cognition'), 'config', 'actions.yaml'))
+        # demo-only plan patches (rewrite.py); '' = off
+        self.declare_parameter('plan_rewrites_path', os.path.join(
+            get_package_share_directory('cortex_cognition'), 'config', 'plan_rewrites.yaml'))
         self.declare_parameter('llm_request_topic', '/cortex/llm/request')
         self.declare_parameter('llm_step_topic', '/cortex/llm/step')
         self.declare_parameter('nav_cmd_topic', '/cortex/nav/cmd')
@@ -277,6 +281,7 @@ class OrchestratorNode(Node):
         self.declare_parameter('step_timeout_nav_s', 60.0)
         self.declare_parameter('step_timeout_vla_s', 30.0)
         self.declare_parameter('step_wait_s', 5.0)
+        self.declare_parameter('idle_wait_s', 1.0)
         self.declare_parameter('safe_stop_nav_s', 3.0)
         self.declare_parameter('safe_stop_vla_s', 10.0)
         self.declare_parameter('plan_timeout_s', 20.0)
@@ -386,6 +391,7 @@ class OrchestratorNode(Node):
             step_timeout_s={'nav': float(g('step_timeout_nav_s').value),
                             'vla': float(g('step_timeout_vla_s').value)},
             step_wait_s=float(g('step_wait_s').value),
+            idle_wait_s=float(g('idle_wait_s').value),
             safe_stop_timeout_s={'nav': float(g('safe_stop_nav_s').value),
                                  'vla': float(g('safe_stop_vla_s').value)},
             plan_timeout_s=float(g('plan_timeout_s').value),
@@ -404,12 +410,14 @@ class OrchestratorNode(Node):
             status=self._status_llm,
             log=lambda s: self.get_logger().info(s),
         )
-        self._exec = ex.Executor(self.cfg, ports, prm)
+        self.rewriter = rewrite.Rewriter.load(g('plan_rewrites_path').value, self.cfg)
+        self._exec = ex.Executor(self.cfg, ports, prm, rewriter=self.rewriter)
         # 100 ms absence monitor (accept / stale / step timeouts); everything else is event-driven.
         self.create_timer(0.1, self._exec.tick, callback_group=grp)
         self.get_logger().info(
             f'llm mode: {len(self.cfg["actions"])} actions, '
-            f'{len(self.cfg["nav"]["places"])} places, detector={g("detector_service").value}')
+            f'{len(self.cfg["nav"]["places"])} places, detector={g("detector_service").value}, '
+            f'plan rewrites={self.rewriter.names or "off"}')
 
     def _warm_tts_cache(self) -> None:
         """Every fixed phrase / example say → tts prefetch, one per tick, starting 3 s after boot."""
@@ -506,8 +514,7 @@ class OrchestratorNode(Node):
                        args=list(step.args), instruction=step.instruction, cancel=False))
 
     def _send_cancel(self, which: str, plan_id: str, index: int) -> None:
-        msg = SubtaskCmd(plan_id=plan_id, index=index, cancel=True)
-        self.cmd_pub[which].publish(msg)
+        self.cmd_pub[which].publish(SubtaskCmd(plan_id=plan_id, index=index, cancel=True))
 
     def _check_target(self, target: str):
         """Synchronous detector query -> (found, detail). A non-empty detail with
@@ -684,11 +691,12 @@ def main(args=None) -> None:
     executor.add_node(node)
     try:
         executor.spin()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():                  # launch's SIGINT may have shut the context down already
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

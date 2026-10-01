@@ -27,7 +27,7 @@ def _nodes(context):
     if only == 'false':
         graph += [('cortex_perception', 'stt_node'), ('cortex_cognition', 'llm_node'),
                   ('cortex_cognition', 'orchestrator_node'), ('cortex_action', 'tts_node'),
-                  ('cortex_gui', 'gui_bridge_node')]
+                  ('cortex_action', 'speaker_node'), ('cortex_gui', 'gui_bridge_node')]
     nodes = []
     for package, executable in graph:
         params = [str(share/'config/cortex_params.yaml'), str(profile)]

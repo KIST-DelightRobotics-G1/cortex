@@ -1,5 +1,8 @@
 # Cortex YOLO26s 3차 모델 통합 확인
 
+> 최신 main 병합 전 검증 기록이다. 아래 Subtask 완료 시점과 테스트 개수는 당시 구현 기준이며,
+> 최신 DONE→IDLE·계획 보정·H.264 적용 결과는 [최신 main 통합 확인](detector_main_verification.md)을 참고한다.
+
 기존 `SYS-REQ-44-yolo-detector-integration` 로컬 브랜치에서 작업했다. 로봇에 명령을 보내거나 ROS를 구동하지 않았으며, 실제 모델 추론과 Cortex의 공통 판정·실행 로직을 오프라인으로 검증했다.
 
 ## 적용한 구성

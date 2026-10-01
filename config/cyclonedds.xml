@@ -4,29 +4,38 @@
             xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
 
   <!--
-    Bridge domain shared with the NX onboard stack (Domain Id=1).
-    Must stay in sync with kist-drl-g1-onboard/config/cyclonedds.xml.
+    Domain 0: the robot's domain, shared with ext-sensor-io, gearsonic,
+    navigation-planner and vla-inference. (Domain 1 was the bridge to the
+    onboard stack, which is no longer used.)
 
-    Unicast-only peer discovery: multicast is off, the NX is listed as an
-    explicit peer. DDS_PEER_IP must resolve to the NX before launch (see env.sh).
+    Discovery is MULTICAST, like every module it talks to (ext-sensor-io, gearsonic,
+    navigation-planner, vla-inference and the robot's own services all run
+    CycloneDDS / the Unitree SDK with multicast discovery on the robot LAN). A
+    unicast-only participant and a multicast one never find each other — measured
+    0/40 samples either way, 39/40 once multicast is on. The peers below are an
+    extra, for hosts on the robot LAN that multicast may not reach.
 
     TODO(REQ-XX): confirm the PC NIC name below on the demo machine
     (`ip -br link`). It is host-specific and NOT portable.
   -->
-  <Domain Id="1">
+  <Domain Id="0">
     <General>
       <Interfaces>
         <!-- PC NIC facing the robot LAN. Change to match the demo machine. -->
-        <NetworkInterface name="eno2" priority="default" multicast="false"/>
-        <NetworkInterface name="lo"   priority="default" multicast="false"/>
+        <NetworkInterface name="eno2" priority="default" multicast="default"/>
+        <!-- No "lo" here: with a second interface Cyclone also sends discovery to
+             DDS_PEER_IP from a 127.0.0.1-bound socket, which the kernel refuses
+             (ddsi_udp_conn_write ... retcode -3, ~20 lines per node per cycle).
+             Nodes on this host still find each other through the localhost peer. -->
       </Interfaces>
-      <AllowMulticast>false</AllowMulticast>
       <MaxMessageSize>65500B</MaxMessageSize>
     </General>
     <Discovery>
       <Peers>
         <Peer address="localhost"/>
         <Peer address="${DDS_PEER_IP}"/>
+        <!-- G1 internal PC: runs the audio service ("voice") speaker_node calls. -->
+        <Peer address="${DDS_ROBOT_IP}"/>
       </Peers>
       <ParticipantIndex>auto</ParticipantIndex>
       <MaxAutoParticipantIndex>20</MaxAutoParticipantIndex>

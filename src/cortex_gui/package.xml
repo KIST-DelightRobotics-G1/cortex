@@ -18,6 +18,8 @@
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
   <depend>cortex_msgs</depend>
+  <depend>kist_msgs</depend>
+  <exec_depend>cortex_perception</exec_depend>  <!-- ext_sensor.H264Decoder -->
   <depend>python3-websockets</depend>
 
   <test_depend>python3-pytest</test_depend>

@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'src/cortex_perception'), str(ROOT/'src/cortex_cognition')]
 from cortex_perception.detection import PresenceWindow, DetectionRecord, target_mapping
 from cortex_cognition import planner, executor as ex
+from cortex_cognition.rewrite import Rewriter
 
 
 def make_window(p, names, confidence):
@@ -68,7 +69,7 @@ def compare(video, p, names, conf, timing, labels):
             'appearance':onsets,'disappearance':offsets,'records':rows}
 
 
-def scenario(video, p, names, config, params, name, done_times, stop_at=None):
+def scenario(video, p, names, config, params, rewriter, name, done_times, stop_at=None, idle_delay=.3):
     now=0.;q=[];seq=0;events=[];commands=[];checks=[];statuses=[]
     w=make_window(p,names,p['default_min_confidence'])
     def schedule(t,kind,data=None):
@@ -84,7 +85,8 @@ def scenario(video, p, names, config, params, name, done_times, stop_at=None):
                    trace=lambda k,pid,i,title,detail:events.append({'t':now,'kind':k,'index':i,'title':title,'detail':detail}),
                    status=lambda s,task,title,i,n,detail:statuses.append({'t':now,'state':s,'index':i,'detail':detail}))
     x=ex.Executor(config,ports,ex.Params(detector_fail_open=False,
-                   precheck_timeout_s=params['precheck_timeout_s'],precheck_retry_s=params['precheck_retry_s']))
+                   precheck_timeout_s=params['precheck_timeout_s'],precheck_retry_s=params['precheck_retry_s']),
+                   rewriter=rewriter)
     for r in video['records']:schedule(r['query_s'],'detection',r)
     schedule(0.,'plan')
     for i,t in enumerate(done_times):schedule(t,'mock_done',i)
@@ -105,6 +107,11 @@ def scenario(video, p, names, config, params, name, done_times, stop_at=None):
             if x.phase=='RUNNING' and x.cur==data and x._st in ('ACCEPT','RUN'):
                 events.append({'t':now,'mock_done':data})
                 x.on_state('vla',ex.DONE,name,data,'MOCK completion',1.)
+                if idle_delay is not None:schedule(round(now+idle_delay,8),'mock_idle',data)
+        elif kind=='mock_idle':
+            if x.phase=='RUNNING' and x.cur==data and x._st=='WAIT_IDLE':
+                events.append({'t':now,'mock_idle':data})
+                x.on_state('vla',ex.IDLE,'',0,'MOCK cleanup complete',0.)
         elif kind=='stop':x.stop()
         elif kind=='tick':
             if x.phase=='RUNNING' and x._st in ('ACCEPT','RUN'):
@@ -135,17 +142,22 @@ def main():
     cfg=planner.load_config(str(ROOT/'src/cortex_cognition/config/actions.yaml'))
     comparisons=[compare(video,{**p,'require_latest_hit':latest},names,c,timing,ann['videos']['v3']['cucumber'])
                  for latest in (False,True) for c in (.25,.4)]
-    scenarios=[scenario(video,p,names,cfg,ep,'object_visible_after_short_wait',[10.6,23.8,25.2]),
-               scenario(video,p,names,cfg,ep,'cucumber_absent_timeout',[5.,23.8,25.2]),
-               scenario(video,p,names,cfg,ep,'without_completion_signal',[]),
-               scenario(video,p,names,cfg,ep,'stop_during_precheck',[],stop_at=.1)]
-    assert [r['action'] for r in scenarios[0]['commands']]==['open','pick','close'] and scenarios[0]['success']
-    assert [r['action'] for r in scenarios[1]['commands']]==['open'] and not scenarios[1]['success']
+    rewrites_path=ROOT/'src/cortex_cognition/config/plan_rewrites.yaml'
+    rw=Rewriter.load(str(rewrites_path),cfg)
+    scenarios=[scenario(video,p,names,cfg,ep,rw,'object_visible_after_short_wait',[1.,10.3,23.,23.5,25.2]),
+               scenario(video,p,names,cfg,ep,rw,'cucumber_absent_timeout',[1.,5.,23.,23.5,25.2]),
+               scenario(video,p,names,cfg,ep,rw,'without_completion_signal',[]),
+               scenario(video,p,names,cfg,ep,rw,'stop_during_precheck',[],stop_at=.1),
+               scenario(video,p,names,cfg,ep,rw,'done_without_idle',[1.],idle_delay=None)]
+    assert [r['action'] for r in scenarios[0]['commands']]==['open','approach','pick','step_back','close'] and scenarios[0]['success']
+    assert [r['action'] for r in scenarios[1]['commands']]==['open','approach'] and not scenarios[1]['success']
     assert [r['action'] for r in scenarios[2]['commands']]==['open'] and not scenarios[2]['success']
     assert not scenarios[3]['commands'] and scenarios[3]['final_phase']=='IDLE'
-    result={'scope':'Exploratory reused test; saved real YOLO inference + real Cortex logic. No ROS/robot. VLA completion and heartbeat mocked. Manual scenario timings.',
+    assert [r['action'] for r in scenarios[4]['commands']]==['open'] and not scenarios[4]['success']
+    result={'scope':'Exploratory reused test; saved real YOLO inference + real Cortex logic. No ROS/robot. VLA completion, cleanup IDLE and heartbeat mocked. Shipped demo rewrites enabled. Manual scenario timings.',
             'weight_sha256':evidence['weight_sha256'],'profile':profile,
-            'source_hashes':{str(Path(p)):hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in [args.evidence,args.near_timing,args.visibility]},
+            'rewrite_rules':rw.names,'mock_idle_delay_s':.3,
+            'source_hashes':{str(Path(p)):hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in [args.evidence,args.near_timing,args.visibility,rewrites_path,ROOT/'src/cortex_cognition/cortex_cognition/executor.py']},
             'near_query_comparison':comparisons,'scenarios':scenarios,'assertions_passed':True}
     out=Path(args.output)
     if out.exists():raise FileExistsError(out)
