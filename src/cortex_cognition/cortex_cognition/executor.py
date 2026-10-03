@@ -4,27 +4,35 @@ No rclpy here: the node feeds events in (PlanStep, SubtaskState, transcript,
 tick) and the executor talks back through `Ports` callbacks. That keeps the
 state machine unit-testable with a fake clock.
 
-Contract implemented: Subtask_state_interface_spec v0.1
+Contract implemented: docs ICD RULE-SUBTASK (from Subtask_state_interface_spec v0.1)
     accept_timeout_s 0.5 (+1 resend) · stale_s 1.0 · step_timeout nav 60 / vla 30
     step_wait_s 5 (next PlanStep) · cancel_ack_s 0.5 · safe_stop nav 3 / vla 10
     idle_wait_s 1 (DONE → IDLE)
     IDLE from a module means "cleanup complete, ready for a new Cmd"
 
 Two rules keep every module handled the same way:
-    1. The next Cmd goes out only after the module that ran the previous step
-       reports IDLE, not at its first DONE. nav and VLA both drive the body
-       through gearsonic; IDLE is "I have let go", DONE is only "I got there".
-    2. Every stop (user "stop", preemption by a new plan, step timeout) sends a
-       cancel and waits for IDLE. Whether to defer to a safe point is the
-       module's call (appendix A: cancel_deferred / cancelled_at_safe_point).
-       If the module does not reach IDLE in time, no new plan is started.
+    1. A Cmd goes out only to a module whose last reported status is IDLE.
+       After a step, that means waiting for the module's IDLE, not its first
+       DONE — nav and VLA both drive the body through gearsonic; IDLE is "I have
+       let go", DONE is only "I got there". Before any other dispatch (a new
+       plan's first step, a step on the other module) a module still RUNNING
+       from an abandoned step is cancelled and its IDLE awaited (WAIT_READY).
+       Modules therefore never see a Cmd while busy: there is no preemption by
+       Cmd — a busy module may ignore one.
+    2. Every stop (user "stop", a new plan replacing the running one, step
+       timeout) sends a cancel and waits for IDLE. Whether to defer to a safe
+       point is the module's call (appendix A: cancel_deferred /
+       cancelled_at_safe_point). An unanswered cancel is resent once after
+       cancel_ack_s. If the module does not reach IDLE in time, no new plan is
+       started.
     The one graceful stop is a plan error mid-plan: the running step finishes
     (bounded by its step timeout, then cancelled) and nothing after it starts.
 
 Phases
     IDLE       nothing running
     PLANNING   PlanRequest sent, waiting for the first PlanStep (or a reply)
-    RUNNING    a step is dispatched (sub-state in `_st`: ACCEPT | RUN | WAIT_IDLE | WAIT_STEP)
+    RUNNING    a step is dispatched (sub-state in `_st`:
+               WAIT_READY | ACCEPT | RUN | WAIT_IDLE | WAIT_STEP)
     STOPPING   cancel sent (or the step is allowed to finish); waiting for the module's IDLE
     CONFIRM    a confirm question is pending — next utterance answers it
 """
@@ -116,12 +124,14 @@ class Executor:
         self.steps: dict[int, Step] = {}
         self.count = -1                 # from END; -1 until known
         self.cur = -1                   # current step index
-        self._st = ''                   # ACCEPT | RUN | WAIT_IDLE | WAIT_STEP
+        self._st = ''                   # WAIT_READY | ACCEPT | RUN | WAIT_IDLE | WAIT_STEP
         self._t = 0.0                   # timestamp of the current sub-state entry
         self._retries = 0
         self._busy_seen = False         # module reported the current step as non-IDLE
         self._final_traced = False      # STEP_DONE / STEP_FAILED already shown for the current step
         self._stop_mode = ''            # STOPPING: 'cancel' (cancel sent) | 'finish' (let the step end)
+        self._cancel_acked = False      # STOPPING: module answered the cancel (IDLE or cancel_deferred)
+        self._cancel_resent = False     # STOPPING: the one cancel resend is spent
         self._pending: Optional[dict] = None   # plan waiting to start after a stop
         self._stop_reason = ''
         self._confirm_summary = ''
@@ -281,6 +291,10 @@ class Executor:
                 if status == IDLE:                       # rule 1: the module let go → next step
                     self._advance()
                 return
+            if self._st == 'WAIT_READY':
+                if status == IDLE:                       # rule 1: the module is free → send now
+                    self._send_step(self.cur)
+                return
             if not mine:
                 return
             if status == RUNNING and self._st == 'ACCEPT':
@@ -293,6 +307,8 @@ class Executor:
             elif status == FAILED and self._st in ('ACCEPT', 'RUN'):
                 self._fail_step(detail or 'failed')
         elif self.phase == 'STOPPING':
+            if mine and status == RUNNING and detail.startswith('cancel_deferred'):
+                self._cancel_acked = True
             if status == IDLE and self._module_settled():
                 self._finish_stop()
             elif mine and status in (DONE, FAILED) and not self._final_traced:
@@ -335,7 +351,14 @@ class Executor:
             return
         if self.phase == 'RUNNING' and st is not None:
             m = self.mod[st.exec]
-            if self._st == 'ACCEPT':
+            if self._st == 'WAIT_READY':
+                if now - self._t > self.prm.safe_stop_timeout_s.get(st.exec, 10.0):
+                    # rule 1/2: the module is still busy — put nothing on top of it
+                    self.p.trace(T_NOTE, self.plan_id, st.index, '모듈이 비지 않음',
+                                 STATUS_NAME.get(m.status, str(m.status)))
+                    self.p.say(planner.phrase(self.cfg, 'stop_failed'))
+                    self._abandon('module not idle')
+            elif self._st == 'ACCEPT':
                 if now - self._t > self.prm.accept_timeout_s:
                     if self._retries < self.prm.accept_retries:
                         self._retries += 1
@@ -362,6 +385,13 @@ class Executor:
                 if now - self._t > self.prm.step_timeout_s.get(st.exec, 30.0):
                     self._send_cancel(st, 'timeout')
                 return
+            if (not self._cancel_acked and not self._cancel_resent
+                    and now - self._t > self.prm.cancel_ack_s):
+                # no IDLE and no cancel_deferred yet: the cancel may be lost — resend
+                # once. A Cmd no longer preempts, so the cancel is the only way to stop.
+                self._cancel_resent = True
+                self.p.send_cancel(st.exec, self.plan_id, st.index)
+                self.p.trace(T_NOTE, self.plan_id, st.index, '취소 재전송', '')
             if now - self._t > self.prm.safe_stop_timeout_s.get(st.exec, 10.0):
                 self.p.trace(T_NOTE, self.plan_id, st.index, '모듈이 멈추지 않음', '')
                 self._finish_stop(module_ok=False)
@@ -375,8 +405,26 @@ class Executor:
         return None
 
     def _dispatch(self, index: int) -> None:
+        """Rule 1: send only to a module whose last reported status is IDLE.
+
+        Otherwise wait for its IDLE (WAIT_READY). A module still RUNNING here is a
+        leftover from an abandoned step (not accepted in time, lost, …) — cancel it
+        by the id it reports. DONE / FAILED just finish their 3x burst."""
         st = self.steps[index]
         self.cur = index
+        m = self.mod[st.exec]
+        if m.status != IDLE:
+            self._st, self._t = 'WAIT_READY', self.p.now()
+            if m.status == RUNNING and m.plan_id:
+                self.p.send_cancel(st.exec, m.plan_id, m.index)
+                self.p.trace(T_CANCEL, m.plan_id, m.index, '이전 동작 취소', 'module busy')
+            self.p.log(f'{st.exec} is {STATUS_NAME.get(m.status, m.status)} — waiting for IDLE '
+                       f'before step {index}')
+            return
+        self._send_step(index)
+
+    def _send_step(self, index: int) -> None:
+        st = self.steps[index]
         target = planner.precheck_target(self.cfg, st.action, st.args)
         if target:
             found, detail = self.p.check_target(target)
@@ -452,17 +500,20 @@ class Executor:
             self._pending = None
         st = self._cur()
         self._stop_reason = reason
-        between_steps = self._st in ('WAIT_STEP', 'WAIT_IDLE')
+        between_steps = self._st in ('WAIT_STEP', 'WAIT_IDLE', 'WAIT_READY')
         if trace and between_steps and self.phase == 'RUNNING':
             # nothing to cancel, but the screen still has to show the stop
             self.p.trace(T_CANCEL, self.plan_id, -1, '다음 단계 전에 중단', reason)
-        if st is None or self._st == 'WAIT_STEP' or self.phase != 'RUNNING':
+        if st is None or self._st in ('WAIT_STEP', 'WAIT_READY') or self.phase != 'RUNNING':
+            # nothing of ours is moving (WAIT_READY: our Cmd was never sent; a leftover
+            # was already cancelled and the next dispatch waits for its IDLE again)
             self._finish_stop()                          # nothing is moving
             return
         self.phase = 'STOPPING'
         self._t = self.p.now()
         if self._st == 'WAIT_IDLE':                      # step already over; only its IDLE is missing
             self._stop_mode = 'cancel'
+            self._cancel_acked = True                    # no cancel was sent, so none to resend
         elif cancel:
             self._send_cancel(st, reason, trace)
         else:
