@@ -266,6 +266,9 @@ class OrchestratorNode(Node):
         # demo-only plan patches (rewrite.py); '' = off
         self.declare_parameter('plan_rewrites_path', os.path.join(
             get_package_share_directory('cortex_cognition'), 'config', 'plan_rewrites.yaml'))
+        # VLA training sentences per action(args) (planner.load_vla_prompts); '' = templates only
+        self.declare_parameter('vla_prompts_path', os.path.join(
+            get_package_share_directory('cortex_cognition'), 'config', 'vla_prompts.yaml'))
         self.declare_parameter('llm_request_topic', '/cortex/llm/request')
         self.declare_parameter('llm_step_topic', '/cortex/llm/step')
         self.declare_parameter('nav_cmd_topic', '/cortex/nav/cmd')
@@ -407,6 +410,7 @@ class OrchestratorNode(Node):
             log=lambda s: self.get_logger().info(s),
         )
         self.rewriter = rewrite.Rewriter.load(g('plan_rewrites_path').value, self.cfg)
+        self._load_vla_prompts(g('vla_prompts_path').value)
         self._exec = ex.Executor(self.cfg, ports, prm, rewriter=self.rewriter)
         # 100 ms absence monitor (accept / stale / step timeouts); everything else is event-driven.
         self.create_timer(0.1, self._exec.tick, callback_group=grp)
@@ -503,7 +507,30 @@ class OrchestratorNode(Node):
         if text:
             self.say_pub.publish(ActionCmd(text=text))
 
+    def _load_vla_prompts(self, path: str) -> None:
+        """vla_prompts.yaml → cfg['vla_prompts']. Unfilled entries fall back to the template
+        sentence — the VLA still moves, but its progress head will not match, so no DONE."""
+        known = set(self.cfg['actions']) | set(self.rewriter.verbs)
+        filled, empty = planner.load_vla_prompts(path, known)
+        self.cfg['vla_prompts'] = filled
+        log = self.get_logger()
+        if not filled and not empty:
+            log.info('vla prompts: off — every VLA step sends its template sentence')
+            return
+        log.info(f'vla prompts: {len(filled)} filled ({path})')
+        for key, sentence in filled.items():
+            log.info(f'  {key:<28} {sentence!r}')
+        if empty:
+            log.warning(
+                f'vla prompts: {len(empty)} NOT FILLED → template sentence, no VLA DONE '
+                f'(progress head needs the exact training sentence): {", ".join(empty)}')
+
     def _send_cmd(self, which: str, step, plan_id: str) -> None:
+        if which == 'vla' and planner.vla_prompt(self.cfg, step.action, step.args) is None:
+            self.get_logger().warning(
+                f'{planner.prompt_key(step.action, step.args)}: no VLA training sentence in '
+                f'vla_prompts.yaml — sending template {step.instruction!r}; expect no DONE '
+                f'(step timeout instead)')
         self._sent[which] = (plan_id, step.index, step.action, list(step.args))
         self.cmd_pub[which].publish(
             SubtaskCmd(plan_id=plan_id, index=step.index, action=step.action,
