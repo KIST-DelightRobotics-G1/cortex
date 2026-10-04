@@ -74,8 +74,9 @@ class Rewriter:
         verb, args = ins['a'], list(ins.get('args', []))
         v = self.verbs.get(verb)
         if v is not None:                        # demo-only verb defined in this file
+            # VLA training sentence (vla_prompts.yaml) first, this file's template otherwise
             en = self.cfg.get('english', {})
-            instruction = v.get('instruction', '').format(
+            instruction = planner.vla_prompt(self.cfg, verb, args) or v.get('instruction', '').format(
                 *[en.get(x, x.replace('_', ' ')) for x in args])
             title = v.get('title', '{0} ' + v.get('ko', verb)).format(
                 *[planner.ko_name(self.cfg, x) for x in args])

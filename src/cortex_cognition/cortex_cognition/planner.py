@@ -5,7 +5,8 @@
     validate_line(raw, cfg, expected_i)       one line → Line (sub | end | reply | error | skip)
     stream_plan(client, model, cfg, text, state, on_line, should_stop)
                                               streaming call; on_line(Line) per closed line
-    instruction_for(cfg, action, args)        VLA English instruction from the template
+    instruction_for(cfg, action, args)        VLA instruction: training sentence table, else template
+    load_vla_prompts(path, known_actions)     vla_prompts.yaml → ({key: sentence}, [empty keys])
     precheck_target(cfg, action, args)        vocabulary key the detector must see, or None
 
 Line schema (design 2.1):
@@ -148,12 +149,69 @@ def exec_of(cfg: dict, action: str) -> str:
 
 
 def instruction_for(cfg: dict, action: str, args: list) -> str:
-    """VLA 에 넘기는 영어 지시문. 이름표에 없는 인자는 밑줄만 공백으로 바꿔 그대로 쓴다."""
+    """VLA 에 넘기는 영어 지시문.
+
+    VLA 학습 문장 표(vla_prompts.yaml)에 있으면 그 문장을 글자 그대로 쓴다 — VLA 의 진행도
+    헤드는 학습 문장과 똑같은 instruction 에만 붙는다. 없으면 actions.yaml 템플릿으로 만든다
+    (이름표에 없는 인자는 밑줄만 공백으로 바꿔 그대로 쓴다)."""
+    hit = vla_prompt(cfg, action, args)
+    if hit:
+        return hit
     tpl = cfg.get('instruction', {}).get(action)
     if not tpl:
         return ''
     en = cfg.get('english', {})
     return tpl.format(*[en.get(a, a.replace('_', ' ')) for a in args])
+
+
+class PromptConfigError(ValueError):
+    """vla_prompts.yaml is malformed — raised at load so the node fails fast."""
+
+
+_PROMPT_KEY_RE = re.compile(r'^([a-z][a-z0-9_]*)\(([a-z0-9_,]*)\)$')
+
+
+def prompt_key(action: str, args: list) -> str:
+    """vla_prompts.yaml 의 키: 'open(fridge_door)', 'take_out(cucumber,fridge)'."""
+    return f'{action}({",".join(args)})'
+
+
+def vla_prompt(cfg: dict, action: str, args: list) -> str | None:
+    """학습 문장 표에 있는 문장, 없으면 None."""
+    return (cfg.get('vla_prompts') or {}).get(prompt_key(action, args)) or None
+
+
+def load_vla_prompts(path: str, known_actions) -> tuple:
+    """vla_prompts.yaml → ({키: 문장} 채워진 것만, [비어 있는 키]).
+
+    '' 이거나 파일이 없으면 ({}, []) — 모든 VLA 단계가 템플릿 문장을 쓴다 (예전과 같다).
+    키의 공백은 무시한다. 값이 비어 있으면 '아직 안 채움' 이라 그 단계도 템플릿을 쓴다.
+    키 형식이 틀리거나, 모르는 동작이거나, 값이 문자열이 아니면 PromptConfigError.
+    """
+    if not path or not os.path.exists(path):
+        return {}, []
+    with open(path, encoding='utf-8') as f:
+        spec = yaml.safe_load(f) or {}
+    raw = spec.get('prompts') or {}
+    if not isinstance(raw, dict):
+        raise PromptConfigError('prompts must be a mapping "action(args)": "sentence"')
+    filled, empty = {}, []
+    for k, v in raw.items():
+        key = str(k).replace(' ', '')
+        m = _PROMPT_KEY_RE.match(key)
+        if not m or ',,' in key or key.endswith(',)') or '(,' in key:
+            raise PromptConfigError(f'bad key {k!r}: write action(arg1,arg2), e.g. open(fridge_door)')
+        if m.group(1) not in known_actions:
+            raise PromptConfigError(f'key {k!r}: unknown action {m.group(1)!r}')
+        if key in filled or key in empty:
+            raise PromptConfigError(f'key {k!r} appears twice')
+        if v is None or (isinstance(v, str) and not v.strip()):
+            empty.append(key)
+        elif isinstance(v, str):
+            filled[key] = v
+        else:
+            raise PromptConfigError(f'key {k!r}: the sentence must be a string')
+    return filled, empty
 
 
 def precheck_target(cfg: dict, action: str, args: list) -> str | None:
