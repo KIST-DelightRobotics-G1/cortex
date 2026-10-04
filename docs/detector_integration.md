@@ -1,4 +1,7 @@
-# Local refrigerator / cucumber detector [SYS-REQ-44]
+# Historical detector integration [SYS-REQ-44]
+
+For current standard launch and CUDA Docker setup, use [yolo_deployment.md](yolo_deployment.md).
+The settings and measurements below describe the earlier integration, not current defaults.
 
 The real detector profile loads an explicit local YOLO detection weight and uses
 its class names, including custom `refrigerator` and `cucumber` classes. Existing

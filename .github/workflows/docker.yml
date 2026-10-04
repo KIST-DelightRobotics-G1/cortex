@@ -30,6 +30,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # No GPU or deployment weight is available on GitHub-hosted runners.
+      - name: Smoke — standard launch with real YOLO on CPU
+        run: |
+          docker run --rm -e ROS_LOCALHOST_ONLY=1 \
+            -e CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo"/></Interfaces></General></Domain></CycloneDDS>' \
+            kist-cortex python3 .github/scripts/yolo_runtime_smoke.py
+
       # The offline loop end to end: dummy LLM -> orchestrator -> mock nav/vla.
       # The runner has no eno2 and no NX, so DDS is pinned to loopback here.
       - name: Smoke — one utterance runs to PLAN_DONE

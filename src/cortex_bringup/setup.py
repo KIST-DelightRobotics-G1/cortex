@@ -16,7 +16,7 @@ setup(
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'pyyaml'],
     zip_safe=True,
     maintainer='박성용',
     maintainer_email='park50260@gmail.com',

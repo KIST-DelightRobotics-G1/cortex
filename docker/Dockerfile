@@ -6,11 +6,9 @@
 # image-build time — `docker run` gives a ready runtime; no bind mount, no
 # in-container setup.
 #
-# Deliberately left out (first cut):
-#   detector_node's YOLO backend — no torch/ultralytics, no GPU. The node still
-#     runs with `backend: always` and the orchestrator's precheck passes.
-#   the display renderer — cortex-gui ships its own container; this one only
-#     serves the websocket (gui_bridge_node, :8081).
+# Includes YOLO and CUDA 12.6 PyTorch. Runtime GPU access is set by run.sh.
+# Weights are mounted externally; no model or credential is baked into the image.
+# cortex-gui ships the display renderer separately.
 #
 # DDS: Humble's rmw_cyclonedds_cpp is CycloneDDS 0.10.x, the same generation as
 # the robot bus (unitree_sdk2 / gearsonic / vla-inference pin 0.10.2).
@@ -27,14 +25,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-ament-lint-common \
     python3-colcon-common-extensions \
     python3-pip \
+    libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # ─── python deps ──────────────────────────────────────────────────────────────
 # Before the source COPY so code edits never re-download. pytest>=7 for the
 # same reason as CI (the LLM SDKs pull anyio, whose plugin needs pytest 7).
 WORKDIR /workspace/cortex
-COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt "pytest>=7,<9"
+COPY requirements.txt requirements-detector.txt requirements-torch-cu126.txt ./
+RUN pip3 install --no-cache-dir -r requirements-torch-cu126.txt && \
+    pip3 install --no-cache-dir -r requirements.txt -r requirements-detector.txt "pytest>=7,<9" && \
+    python3 -c "import torch, torchvision, ultralytics; assert torch.version.cuda == '12.6'; print('YOLO CUDA runtime installed')"
 
 # ─── Unitree SDK (speaker_node -> the robot speaker via AudioClient) ──────────
 # unitree_sdk2py is pure Python on the cyclonedds binding. That binding is built

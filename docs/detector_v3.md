@@ -9,33 +9,26 @@ Latest-main integration results: [local verification](detector_main_verification
 
 ## Run on the workstation
 
-Use the deployment Python/Torch/ROS environment described in `detector_integration.md`.
-Copy the selected weight to the workstation; the repository contains no model binary.
-The selected file is `yolo26s_fridge_cucumber_continued.pt`, with SHA-256:
+Use the [standard deployment guide](yolo_deployment.md) for host/Docker installation.
+The default `cortex.launch.py` and `cortex_params.yaml` now apply the v3 settings.
+The selected model is still external:
 
-`3d275b84378da06dc9202b4d40962f49f8d88d18062357d1d167abab10d6f920`
+`yolo26s_fridge_cucumber_continued.pt`
+
+SHA-256: `3d275b84378da06dc9202b4d40962f49f8d88d18062357d1d167abab10d6f920`
 
 ```bash
-colcon build --symlink-install
-source install/setup.bash
-ros2 launch cortex_bringup cortex_yolo.launch.py \
-  model:=/absolute/path/yolo26s_fridge_cucumber_continued.pt \
-  profile:=fridge_detector_v3.yaml device:=0 detector_only:=true
+ros2 launch cortex_bringup cortex.launch.py \
+  model:=/absolute/path/yolo26s_fridge_cucumber_continued.pt device:=0 detector_only:=true
 ```
 
-Omit `detector_only:=true` to start the Cortex node graph. Motion modules are
-external; this launch does not provide the camera bridge or VLA runner. Configure
-camera topic/transport and actual LLM backend in `cortex_params.yaml` for the site.
-Current defaults use domain 0 and `kist_msgs/CompressedColorFrame` on
-`/kist/camera/head/color/h264`. Install `requirements.txt` (including PyAV) and
-`requirements-detector.txt`; the standard Docker image alone omits YOLO. A container
-also needs the selected model mounted at the path passed to `model`.
-The full YOLO launch includes the latest main's `speaker_node`.
-The ordinary `cortex.launch.py`/demo profiles still use the existing stub settings;
-the dedicated YOLO launch now defaults to this versioned v3 profile. Use
-`profile:=fridge_detector.yaml` explicitly to reproduce the earlier detector profile.
-A wrong weight fails the hash check, yields model_not_loaded, and cannot dispatch
-under the v3 profile. `device:=cpu` is available without CUDA.
+Omit detector_only to start the full Cortex graph. Camera/nav/VLA are external.
+The default YAML model path matches Docker's /models/cortex read-only mount.
+A full site YAML can be supplied via params_file. Model/device arguments override it.
+The old cortex_yolo.launch.py remains a wrapper; profile names are not restricted
+to a hard-coded list anymore. llm_demo.launch.py explicitly retains the always stub.
+Missing weights stop standard launch; wrong hashes cannot authorize dispatch.
+Default LLM backend remains dummy and VLA training sentences need configuration.
 
 ## Decision sequence
 

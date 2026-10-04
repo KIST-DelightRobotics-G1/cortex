@@ -93,9 +93,10 @@ orchestrator_node:
     safe_stop_nav_s: 3.0                # cancel -> IDLE (then no new plan starts)
     safe_stop_vla_s: 10.0
     plan_timeout_s: 20.0                # PlanRequest -> first line
-    # detector unavailable (no node / timeout / stale frame) -> proceed; only a real
-    # "not visible" blocks the step. Set false to block on any missing verdict.
-    detector_fail_open: true
+    # Real robot precheck: missing or unavailable evidence blocks dispatch.
+    detector_fail_open: false
+    precheck_timeout_s: 1.0
+    precheck_retry_s: 0.1
     tts_prefetch_topic: /cortex/tts/prefetch
     tts_warmup_topic: /cortex/tts/warmup
     # demo-only steps inserted between plan lines (config/plan_rewrites.yaml). '' = off.
@@ -121,12 +122,16 @@ detector_node:
     camera_transport: h264               # h264 | compressed | raw
     detections_topic: /cortex/detections
     service: /cortex/detector/check
-    backend: always                      # always = STUB (every target found) | yolo
-    model: yolo26s.pt                    # yolo26x.pt if 26s misses; cucumber needs a fine-tuned file
-    device: ''                           # '' = auto (cuda if present)
+    backend: yolo                        # llm_demo.launch.py explicitly selects the always stub
+    model: /models/cortex/yolo26s_fridge_cucumber_continued.pt
+    model_sha256: "3d275b84378da06dc9202b4d40962f49f8d88d18062357d1d167abab10d6f920"
+    device: '0'                          # NVIDIA GPU; use cpu or mps explicitly on other hosts
     rate_hz: 8.0
     window_s: 0.6                        # CheckTarget answers by majority over this window
-    default_min_confidence: 0.4
+    default_min_confidence: 0.25
+    min_frames: 3
+    require_latest_hit: true
+    allow_unstamped: false
     infer_conf: 0.25
     imgsz: 640
     # target (actions.yaml vocabulary key) -> YOLO class names ('|' separates alternatives)
