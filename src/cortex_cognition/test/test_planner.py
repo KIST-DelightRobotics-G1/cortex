@@ -119,3 +119,29 @@ def test_stream_lines_splits_across_chunks():
     pieces = ['{"i":0,"a":"move_to","args":["fri', 'dge"],"say":"냉장고로 갑니다."}\n{"end":tr', 'ue,"n":1}']
     planner.stream_lines(pieces, CFG, got.append)
     assert [ln.kind for ln in got] == ['sub', 'end']
+
+
+
+def test_multi_precheck_resolves_slots_and_preserves_single_target_config():
+    assert planner.precheck_targets(CFG, 'take_out', ['cucumber', 'fridge']) == ['fridge', 'cucumber']
+    assert planner.precheck_targets(CFG, 'open', ['fridge_door']) == ['fridge_door']
+    assert planner.precheck_targets(CFG, 'put_in', ['cucumber', 'fridge']) == ['fridge']
+    assert planner.precheck_targets(CFG, 'move_to', ['fridge']) == []
+    assert planner.precheck_targets(CFG, 'take_out', ['fridge', 'fridge']) == ['fridge']
+    with pytest.raises(ValueError, match='multiple precheck'):
+        planner.precheck_target(CFG, 'take_out', ['cucumber', 'fridge'])
+
+
+@pytest.mark.parametrize('slots', [[], None, False, 3, {}, ['container', 'typo'], ['container', None]])
+def test_invalid_precheck_config_is_rejected_at_load(tmp_path, slots):
+    import yaml
+    path = tmp_path / 'actions.yaml'
+    path.write_text(yaml.safe_dump({'actions': {'take_out': {'sig': ['object', 'container']}},
+                                    'precheck': {'take_out': slots}}))
+    with pytest.raises(ValueError):
+        planner.load_config(str(path))
+
+
+def test_missing_argument_cannot_silently_remove_a_required_target():
+    with pytest.raises(ValueError, match='missing precheck argument'):
+        planner.precheck_targets(CFG, 'take_out', ['cucumber'])

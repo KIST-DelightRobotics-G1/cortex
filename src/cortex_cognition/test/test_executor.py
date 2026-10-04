@@ -527,3 +527,133 @@ def test_precheck_recovery_then_stop_obeys_cancel_and_idle_contract():
     assert h.x.phase == 'STOPPING'
     h.state('vla', ex.IDLE, '', 0)
     assert h.x.phase == 'IDLE' and len(h.cmds) == 1
+
+
+
+def begin_take_out(h, pid='p1'):
+    h.x.heard(pid, '냉장고에서 오이를 꺼내')
+    h.plan(pid, [('take_out', ['cucumber', 'fridge'])])
+
+
+def test_take_out_requires_both_targets_in_each_retry():
+    queried = []
+    visible = {'fridge'}
+    h = waiting_harness(lambda t: (queried.append(t) or t in visible, ''))
+    begin_take_out(h)
+    assert queried == ['fridge', 'cucumber'] and not h.cmds
+    assert h.statuses[-1][-1] == 'precheck_wait: cucumber: not_visible'
+    visible.clear(); visible.add('cucumber')
+    h.advance(.2)
+    assert not h.cmds and h.x._precheck_target == 'fridge'
+    visible.add('fridge')
+    h.advance(.2)
+    assert h.cmds == [('vla', 0, 'take_out', 'p1')]
+    assert queried[-2:] == ['fridge', 'cucumber']
+    h.state('vla', ex.RUNNING, 'p1', 0)
+    h.advance(.2)
+    assert len(h.cmds) == 1
+
+
+def test_take_out_reports_actual_missing_target_at_shared_deadline():
+    h = waiting_harness(lambda t: (t == 'fridge', ''))
+    begin_take_out(h)
+    h.t = 1.0; h.x.tick()
+    assert not h.cmds and h.x.phase == 'IDLE'
+    assert any('precheck_timeout: cucumber: not_visible' in d for _, _, _, d in h.statuses)
+    assert any('오이' in s for s in h.says)
+
+
+def test_take_out_unavailable_target_blocks_then_recovers():
+    h = waiting_harness(lambda t: (True, '') if t == 'fridge' else (False, 'stale'))
+    begin_take_out(h)
+    assert not h.cmds and h.statuses[-1][-1] == 'precheck_wait: cucumber: stale'
+    h.detector = lambda t: (True, '')
+    h.advance(.2)
+    assert len(h.cmds) == 1
+
+
+def test_take_out_unsupported_target_is_terminal_even_if_other_target_absent():
+    h = waiting_harness(lambda t: (False, '') if t == 'fridge' else (False, 'unsupported_class'))
+    begin_take_out(h)
+    assert h.x.phase == 'IDLE' and not h.cmds
+    assert any('cucumber: unsupported_class' in d for _, _, _, d in h.statuses)
+
+
+def test_take_out_slow_second_query_cannot_extend_step_deadline():
+    h = waiting_harness()
+    queried = []
+    def slow(t):
+        queried.append(t)
+        h.t += .6
+        return True, ''
+    h.detector = slow
+    begin_take_out(h)
+    assert queried == ['fridge', 'cucumber'] and not h.cmds and h.x.phase == 'IDLE'
+    assert any('precheck_timeout: cucumber: detector_timeout' in d for _, _, _, d in h.statuses)
+
+
+def test_take_out_stop_while_waiting_sends_no_cancel_or_late_command():
+    h = waiting_harness(lambda t: (t == 'fridge', ''))
+    begin_take_out(h)
+    h.x.stop()
+    h.detector = lambda t: (True, '')
+    h.advance(.2)
+    assert h.x.phase == 'IDLE' and not h.cmds and not h.cancels
+
+
+def test_take_out_replacement_plan_does_not_reuse_old_positive():
+    h = waiting_harness(lambda t: (t == 'fridge', ''))
+    begin_take_out(h)
+    h.x.heard('p2', '테이블로')
+    h.plan('p2', [('move_to', ['table'])])
+    assert h.cmds == [('nav', 0, 'move_to', 'p2')] and not h.cancels
+
+
+def test_take_out_checks_after_previous_idle_and_next_step_waits_for_its_idle():
+    queried = []
+    h = waiting_harness(lambda t: (queried.append(t) or True, ''))
+    h.x.heard('p1', '꺼내고 닫아')
+    h.plan('p1', [('open', ['fridge_door']), ('take_out', ['cucumber', 'fridge']),
+                  ('close', ['fridge_door'])])
+    h.state('vla', ex.DONE, 'p1', 0)
+    assert queried == ['fridge_door']
+    h.state('vla', ex.IDLE, '', 0)
+    assert queried == ['fridge_door', 'fridge', 'cucumber']
+    h.state('vla', ex.DONE, 'p1', 1)
+    assert [c[2] for c in h.cmds] == ['open', 'take_out']
+    h.state('vla', ex.IDLE, '', 0)
+    assert [c[2] for c in h.cmds] == ['open', 'take_out', 'close']
+
+
+def test_invalid_runtime_precheck_does_not_bypass_gate():
+    h = waiting_harness(lambda t: (True, ''))
+    h.x.cfg = {**CFG, 'precheck': {**CFG['precheck'], 'take_out': ['typo']}}
+    begin_take_out(h)
+    assert not h.cmds and h.x.phase == 'IDLE'
+    assert any('invalid_precheck' in d for _, _, _, d in h.statuses)
+
+
+def test_take_out_preserves_explicit_demo_fail_open_policy():
+    h = Harness(lambda t: (False, 'no_detector'), ex.Params(detector_fail_open=True))
+    begin_take_out(h)
+    assert len(h.cmds) == 1
+
+
+
+def test_take_out_with_demo_rewrite_checks_both_after_approach():
+    from cortex_cognition.rewrite import Rewriter
+    rw = Rewriter.load(os.path.join(HERE, '..', 'config', 'plan_rewrites.yaml'), CFG)
+    visible = {'fridge_door', 'fridge'}
+    h = Harness(lambda t: (t in visible, ''), ex.Params(detector_fail_open=False,
+        precheck_timeout_s=1.0, precheck_retry_s=.1), rewriter=rw)
+    h.x.heard('p1', '오이를 꺼내고 닫아')
+    h.plan('p1', [('open', ['fridge_door']), ('take_out', ['cucumber', 'fridge']),
+                  ('close', ['fridge_door'])])
+    assert [h.x.steps[i].action for i in sorted(h.x.steps)] == [
+        'open', 'approach', 'take_out', 'step_back', 'close']
+    run_step(h, 'vla', 'p1', 0)
+    run_step(h, 'vla', 'p1', 1)
+    assert h.x._st == 'PRECHECK' and [c[2] for c in h.cmds] == ['open', 'approach']
+    visible.add('cucumber')
+    h.advance(.2)
+    assert [c[2] for c in h.cmds] == ['open', 'approach', 'take_out']

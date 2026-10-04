@@ -127,6 +127,7 @@ class Executor:
         self._retries = 0
         self._precheck_next = 0.0
         self._precheck_detail = ''
+        self._precheck_target = ''
         self._busy_seen = False         # module reported the current step as non-IDLE
         self._final_traced = False      # STEP_DONE / STEP_FAILED already shown for the current step
         self._stop_mode = ''            # STOPPING: 'cancel' (cancel sent) | 'finish' (let the step end)
@@ -345,7 +346,7 @@ class Executor:
             m = self.mod[st.exec]
             if self._st == 'PRECHECK':
                 if now - self._t >= self.prm.precheck_timeout_s:
-                    self._precheck_failed(planner.precheck_target(self.cfg, st.action, st.args),
+                    self._precheck_failed(self._precheck_target,
                                           self._precheck_detail or 'not_visible', timeout=True)
                 elif now >= self._precheck_next:
                     self._check_precondition()
@@ -392,35 +393,49 @@ class Executor:
         self.cur = index
         self._st, self._t = 'PRECHECK', self.p.now()
         self._precheck_detail = ''
+        self._precheck_target = ''
         self._check_precondition()
 
     def _check_precondition(self) -> None:
         st = self._cur()
-        target = planner.precheck_target(self.cfg, st.action, st.args)
-        if target:
+        try:
+            targets = planner.precheck_targets(self.cfg, st.action, st.args)
+        except ValueError as error:
+            self.p.say(planner.phrase(self.cfg, 'plan_error'))
+            self._abandon(f'invalid_precheck: {error}')
+            return
+        # Each attempt queries every target again. Never latch an earlier hit
+        # across retries: fridge-only then cucumber-only must not authorize.
+        results = []
+        for target in targets:
             found, detail = self.p.check_target(target)
             now = self.p.now()
-            # A synchronous service response arriving after the deadline cannot dispatch.
+            # All queries share the original step deadline, including slow calls.
             if self.prm.precheck_timeout_s > 0 and now - self._t >= self.prm.precheck_timeout_s:
-                self._precheck_failed(target, detail or 'not_visible', timeout=True)
+                self._precheck_failed(target, 'detector_timeout' if found else detail or 'not_visible',
+                                      timeout=True)
                 return
+            results.append((target, found, detail))
+        blocked = [(t, d or 'not_visible') for t, found, d in results
+                   if not found and not (d and self.prm.detector_fail_open)]
+        if blocked:
+            terminal_reasons = ('unsupported_class', 'unknown_target', 'invalid_request')
+            target, reason = next(((t, d) for t, d in blocked if d in terminal_reasons), blocked[0])
+            if self.prm.precheck_timeout_s > 0 and reason not in terminal_reasons:
+                if (target, reason) != (self._precheck_target, self._precheck_detail):
+                    ko = planner.ko_name(self.cfg, target)
+                    self.p.trace(T_GROUND, self.plan_id, st.index, f'{ko} 확인 대기', reason)
+                    description = f'{target}: {reason}' if len(targets) > 1 else reason
+                    self._status(S_RUNNING, 'precheck_wait: ' + description)
+                self._precheck_target, self._precheck_detail = target, reason
+                self._precheck_next = self.p.now() + self.prm.precheck_retry_s
+                return
+            self._precheck_failed(target, reason)
+            return
+        for target, found, detail in results:
             ko = planner.ko_name(self.cfg, target)
-            if found:
-                self.p.trace(T_GROUND, self.plan_id, st.index, f'{ko} 확인됨', detail)
-            elif detail and self.prm.detector_fail_open:
-                self.p.trace(T_GROUND, self.plan_id, st.index, f'{ko} 확인 불가 · 진행', detail)
-            else:
-                terminal = detail in ('unsupported_class', 'unknown_target', 'invalid_request')
-                if self.prm.precheck_timeout_s > 0 and not terminal:
-                    reason = detail or 'not_visible'
-                    if reason != self._precheck_detail:
-                        self.p.trace(T_GROUND, self.plan_id, st.index, f'{ko} 확인 대기', reason)
-                        self._status(S_RUNNING, 'precheck_wait: ' + reason)
-                    self._precheck_detail = reason
-                    self._precheck_next = now + self.prm.precheck_retry_s
-                    return
-                self._precheck_failed(target, detail or 'not_visible')
-                return
+            title = f'{ko} 확인됨' if found else f'{ko} 확인 불가 · 진행'
+            self.p.trace(T_GROUND, self.plan_id, st.index, title, detail)
         self._st, self._t, self._retries = 'ACCEPT', self.p.now(), 0
         self._busy_seen = self._final_traced = False
         self.p.send_cmd(st.exec, st, self.plan_id)

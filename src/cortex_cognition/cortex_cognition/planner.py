@@ -6,7 +6,7 @@
     stream_plan(client, model, cfg, text, state, on_line, should_stop)
                                               streaming call; on_line(Line) per closed line
     instruction_for(cfg, action, args)        VLA English instruction from the template
-    precheck_target(cfg, action, args)        vocabulary key the detector must see, or None
+    precheck_targets(cfg, action, args)       vocabulary keys the detector must all see
 
 Line schema (design 2.1):
     {"i":0,"a":"move_to","args":["fridge"],"say":"냉장고로 갑니다."}
@@ -49,6 +49,12 @@ def load_config(path: str, capabilities_path: str = '') -> dict:
     cfg.setdefault('aliases', {})
     cfg.setdefault('korean', {})
     cfg.setdefault('english', {})
+    checks = cfg.get('precheck', {})
+    if not isinstance(checks, dict):
+        raise ValueError('precheck must be a mapping')
+    for action in checks:
+        # Validate configured slots before either ROS node starts using them.
+        precheck_targets(cfg, action, cfg.get('actions', {}).get(action, {}).get('sig', []))
     return cfg
 
 
@@ -156,15 +162,41 @@ def instruction_for(cfg: dict, action: str, args: list) -> str:
     return tpl.format(*[en.get(a, a.replace('_', ' ')) for a in args])
 
 
+def precheck_targets(cfg: dict, action: str, args: list) -> list[str]:
+    """Resolve required argument slots; a list means AND, never alternatives.
+
+    Missing action entries mean no precheck. Malformed configured requirements
+    raise instead of silently removing a gate. Deduplicate resolved targets.
+    """
+    checks = cfg.get('precheck', {})
+    if not isinstance(checks, dict):
+        raise ValueError('precheck must be a mapping')
+    if action not in checks:
+        return []
+    slots = checks[action]
+    if isinstance(slots, str):
+        slots = [slots]
+    if not isinstance(slots, list) or not slots or any(not isinstance(s, str) or not s for s in slots):
+        raise ValueError(f'invalid precheck slots for {action!r}')
+    sig = cfg.get('actions', {}).get(action, {}).get('sig', [])
+    targets = []
+    for slot in slots:
+        if slot not in sig:
+            raise ValueError(f'unknown precheck slot {action}.{slot}')
+        index = sig.index(slot)
+        if index >= len(args) or not isinstance(args[index], str) or not args[index]:
+            raise ValueError(f'missing precheck argument {action}.{slot}')
+        if args[index] not in targets:
+            targets.append(args[index])
+    return targets
+
+
 def precheck_target(cfg: dict, action: str, args: list) -> str | None:
-    slot = cfg.get('precheck', {}).get(action)
-    if slot is None:
-        return None
-    sig = cfg['actions'][action]['sig']
-    try:
-        return args[sig.index(slot)]
-    except (ValueError, IndexError):
-        return None
+    """Compatibility for single-target callers; never drop part of an AND gate."""
+    targets = precheck_targets(cfg, action, args)
+    if len(targets) > 1:
+        raise ValueError('multiple precheck targets; use precheck_targets')
+    return targets[0] if targets else None
 
 
 def ko_name(cfg: dict, key: str) -> str:

@@ -72,6 +72,40 @@ This is a start-condition check, not a continuous stop controller during VLA mot
 `user` maps to unsupported `person`, so handover requiring a person is blocked.
 A positive refrigerator result does not distinguish open from closed doors.
 
+### Multi-target start condition for take_out
+
+`actions.yaml` accepts a single argument slot or an AND list:
+
+```yaml
+precheck:
+  open: object
+  close: object
+  pick: object
+  take_out: [container, object]
+```
+
+`take_out(cucumber, fridge)` now checks `fridge` and `cucumber` on every attempt.
+Under the v3 fail-closed profile, both must return `found=true` in that attempt
+before one VLA command is sent. Earlier successful attempts are not remembered:
+fridge-only followed by cucumber-only cannot satisfy the condition. All calls
+share the same one-second step deadline; slow responses cannot extend it.
+Timeout/failure messages identify the target still missing or unavailable.
+Malformed slots, empty lists and missing required arguments cannot silently
+remove a precheck. The other action requirements are unchanged; `put_in` still
+checks its container. The explicit demo fail-open option retains its old meaning.
+
+This reuses the existing `CheckTarget` service in sequence. Each call applies the
+detector's fresh-frame window at query time; this is not an atomic, same-frame
+co-occurrence test. The object/container spatial relationship, door state and
+graspability are not established. The model and ROS wire schemas are unchanged.
+Stop, replacement-plan and DONE-to-IDLE rules still apply. The demo `approach`
+rewrite completes and returns IDLE before the two-target precheck is attempted.
+
+Local regression coverage includes each single-object-only case, both visible,
+alternating positives, latest-frame loss, unavailable/unsupported input, shared
+timeout, stop, replacement plan, and the rewritten open/approach/take_out flow.
+ROS Humble and live camera/VLA verification remain required on the workstation.
+
 ## Comparison and reproducibility
 
 Confidence 0.25 is retained from the report as a provisional baseline, not selected

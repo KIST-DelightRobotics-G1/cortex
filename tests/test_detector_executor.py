@@ -60,3 +60,42 @@ def test_cancel_constructor_matches_the_headerless_wire_schema():
     sent = []
     scope['_send_cancel'](SimpleNamespace(cmd_pub={'nav': SimpleNamespace(publish=sent.append)}), 'nav', 'p1', 2)
     assert (sent[0].plan_id, sent[0].index, sent[0].cancel) == ('p1', 2, True)
+
+
+
+@pytest.mark.parametrize('labels,latest,expected', [([], None, False), (['refrigerator'], None, False),
+    (['cucumber'], None, False), (['refrigerator', 'cucumber'], None, True),
+    (['refrigerator', 'cucumber'], ['refrigerator'], False)])
+def test_v3_take_out_and_gate_uses_real_presence_window(labels, latest, expected):
+    profile = yaml.safe_load((ROOT/'src/cortex_bringup/config/fridge_detector_v3.yaml').read_text())
+    p = profile['detector_node']['ros__parameters']
+    window = PresenceWindow(target_mapping(p['target_keys'], p['target_classes']),
+        ['refrigerator', 'cucumber'], p['window_s'], p['default_min_confidence'],
+        p['min_frames'], p['require_latest_hit'])
+    now = [0.0]
+    commands = []
+    def check(target):
+        result = window.check(target, now[0])
+        return result.found, result.detail
+    ports = ex.Ports(now=lambda: now[0], send_cmd=lambda *a: commands.append(a),
+        send_cancel=lambda *a: None, check_target=check, say=lambda *a: None,
+        stop_speech=lambda: None, trace=lambda *a: None, status=lambda *a: None)
+    machine = ex.Executor(CFG, ports, ex.Params(detector_fail_open=False,
+        precheck_timeout_s=1.0, precheck_retry_s=.1))
+    for i in range(3):
+        now[0] = i*.125
+        window.add([DetectionRecord(label, .9, .5, .5, .3, .3) for label in labels],
+                   now[0], i+1, now[0])
+    if latest is not None:
+        now[0] = .375
+        window.add([DetectionRecord(label, .9, .5, .5, .3, .3) for label in latest],
+                   now[0], 4, now[0])
+    machine.heard('test', '꺼내기')
+    machine.on_step('test', 0, 0, 'take_out', ['cucumber', 'fridge'], '', '', '')
+    assert bool(commands) is expected
+    if expected:
+        assert commands[0][1].instruction == 'Take the cucumber out of the refrigerator.'
+    else:
+        now[0] += 1.0
+        machine.tick()
+        assert not commands and machine.phase == 'IDLE'
