@@ -22,7 +22,12 @@ torch.set_num_threads(2)
 with tempfile.TemporaryDirectory(prefix='cortex-yolo-smoke-') as directory:
     root = Path(directory)
     weight = root/'random.pt'
-    YOLO('yolo26n.yaml').save(str(weight))
+    model = YOLO('yolo26n.yaml')
+    # YAML-built random models default to numeric class names. Give the fixture
+    # supported labels so CheckTarget tests availability, not unsupported_class.
+    model.model.names[0] = 'refrigerator'
+    model.model.names[1] = 'cucumber'
+    model.save(str(weight))
     cfg = yaml.safe_load(Path('/workspace/cortex/install/cortex_bringup/share/'
                              'cortex_bringup/config/cortex_params.yaml').read_text())
     det = cfg['detector_node']['ros__parameters']
