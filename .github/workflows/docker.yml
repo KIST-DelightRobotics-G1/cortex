@@ -30,6 +30,20 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # No GPU or deployment weight is available on GitHub-hosted runners.
+      - name: Smoke — standard launch with real YOLO on CPU
+        env:
+          # ROS_LOCALHOST_ONLY adds lo itself; do not also select it in XML.
+          # Use the same explicit loopback discovery as the plan smoke below.
+          DDS_LO: >-
+            <CycloneDDS><Domain Id="any"><General><Interfaces><NetworkInterface name="lo"/></Interfaces>
+            <AllowMulticast>false</AllowMulticast></General><Discovery><Peers><Peer address="localhost"/></Peers>
+            <ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>50</MaxAutoParticipantIndex>
+            </Discovery></Domain></CycloneDDS>
+        run: |
+          docker run --rm -e CYCLONEDDS_URI="$DDS_LO" \
+            kist-cortex python3 .github/scripts/yolo_runtime_smoke.py
+
       # The offline loop end to end: dummy LLM -> orchestrator -> mock nav/vla.
       # The runner has no eno2 and no NX, so DDS is pinned to loopback here.
       - name: Smoke — one utterance runs to PLAN_DONE

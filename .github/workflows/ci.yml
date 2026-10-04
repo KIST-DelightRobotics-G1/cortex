@@ -208,6 +208,13 @@ jobs:
           sys.exit(1 if bad else 0)
           EOF
 
+      - name: Detector and executor integration tests
+        shell: bash
+        run: |
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          source install/setup.bash
+          python3 -m pytest -q
+
       - name: colcon test
         shell: bash
         run: |

@@ -40,3 +40,73 @@ def test_resamples_48k_to_16k():
 
 def test_decoder_waits_for_a_keyframe():
     assert H264Decoder().decode(b'\x00\x00\x00\x01\x41', keyframe=False) is None
+
+
+def _h264_packets(bframes=0):
+    import av
+    from fractions import Fraction
+    encoder = av.CodecContext.create('libx264', 'w')
+    encoder.width, encoder.height = 80, 32
+    encoder.pix_fmt = 'yuv420p'
+    encoder.time_base = Fraction(1, 30)
+    encoder.options = {'preset': 'ultrafast', 'crf': '18',
+                       'x264-params': f'bframes={bframes}:b-adapt=0:keyint=8:scenecut=0'}
+    packets = []
+    for i in range(24):
+        # Encode the frame index in five large binary tiles. Small brightness
+        # differences are not stable across lossy H.264 / RGB-YUV conversions.
+        pixels = np.empty((32, 80, 3), np.uint8)
+        for bit in range(5):
+            pixels[:, bit*16:(bit+1)*16] = 224 if i & (1 << bit) else 32
+        frame = av.VideoFrame.from_ndarray(pixels, format='bgr24')
+        frame.pts = i
+        packets.extend(encoder.encode(frame))
+    return packets + encoder.encode(None)
+
+
+def test_decoder_preserves_source_pts_when_h264_reorders_frames():
+    from cortex_perception.ext_sensor import decoded_stamp_ns
+    decoder = H264Decoder()
+    origin = 1_700_000_000_000_000_000
+    seen, delayed = [], False
+    for packet in _h264_packets(bframes=2):
+        # One wire message's stamp belongs to that packet's source image.
+        incoming = origin + packet.pts * 33_333_333
+        frame = decoder.decode(bytes(packet), packet.is_keyframe, incoming)
+        if frame is None:
+            continue
+        stamp = decoded_stamp_ns(frame)
+        index, remainder = divmod(stamp-origin, 33_333_333)
+        assert remainder == 0
+        # Read identity from image content independently of packet/frame PTS.
+        # Sample tile interiors to avoid compression at tile boundaries.
+        pixels = frame.to_ndarray(format='bgr24')
+        levels = [float(pixels[8:24, bit*16+4:bit*16+12].mean()) for bit in range(5)]
+        assert all(level < 64 or level > 192 for level in levels), levels
+        image_index = sum(1 << bit for bit, level in enumerate(levels) if level > 128)
+        assert image_index == index, (image_index, index)
+        seen.append(stamp)
+        delayed |= stamp != incoming
+    assert len(seen) >= 20 and seen == sorted(set(seen))
+    assert delayed, 'exercise a decoded frame that is older than the incoming packet'
+
+
+def test_decoder_corrupt_packet_resets_and_recovers_at_keyframe():
+    from cortex_perception.ext_sensor import decoded_stamp_ns
+    decoder = H264Decoder()
+    packets = _h264_packets()
+    assert decoder.decode(bytes(packets[0]), True, 1) is not None
+    assert decoder.decode(b'invalid h264', False, 2) is None
+    assert decoder._ctx is None
+    assert decoder.decode(bytes(packets[1]), False, 3) is None
+    keyframe = next(p for p in packets[1:] if p.is_keyframe)
+    frame = decoder.decode(bytes(keyframe), True, 4)
+    assert frame is not None and decoded_stamp_ns(frame) == 4
+
+
+def test_decoded_frame_without_pts_cannot_claim_freshness():
+    from types import SimpleNamespace
+    from fractions import Fraction
+    from cortex_perception.ext_sensor import decoded_stamp_ns
+    assert decoded_stamp_ns(SimpleNamespace(pts=None, time_base=Fraction(1, 30))) is None
+    assert decoded_stamp_ns(SimpleNamespace(pts=1, time_base=None)) is None

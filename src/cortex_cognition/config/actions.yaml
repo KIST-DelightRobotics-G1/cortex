@@ -51,13 +51,13 @@ instruction:
   lock:     "Lock the {0}."
   unlock:   "Unlock the {0}."
 
-# 검출기 전제 확인: 어느 인자가 보여야 하는가
+# 검출기 전제 확인: 단일 인자 또는 목록(모두 보여야 함). 순서는 조회 순서.
 precheck:
   open: object
   close: object
   pick: object
   handover: person
-  take_out: container
+  take_out: [container, object]
   put_in: container
   receive: person
   insert: target
@@ -69,6 +69,7 @@ precheck:
   unlock: object
 
 phrases:
+  precheck_unavailable: "{ko}의 존재를 확인할 수 없어 작업을 중단합니다."
   ack:                "네."
   unknown_place:      "그곳은 아직 갈 수 없습니다."
   unsupported_action: "그 동작은 아직 할 수 없습니다."

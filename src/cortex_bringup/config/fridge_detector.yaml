@@ -1,0 +1,21 @@
+# Real local-weight integration profile [SYS-REQ-44]. No weights live in git.
+# Supply model:=/absolute/path/to/model.pt via cortex_yolo.launch.py.
+detector_node:
+  ros__parameters:
+    backend: yolo
+    model_sha256: ''                    # Legacy profile permits other local weights
+    require_latest_hit: false
+    rate_hz: 8.0
+    window_s: 0.6
+    min_frames: 3
+    default_min_confidence: 0.4
+    infer_conf: 0.25
+    imgsz: 640
+    allow_unstamped: false
+    target_keys: [fridge_door, fridge, cucumber, user]
+    target_classes: [refrigerator, refrigerator, cucumber, person]
+
+orchestrator_node:
+  ros__parameters:
+    detector_fail_open: false
+    precheck_timeout_s: 0.0

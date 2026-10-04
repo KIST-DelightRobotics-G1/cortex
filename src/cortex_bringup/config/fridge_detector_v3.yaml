@@ -1,0 +1,23 @@
+# Selected YOLO26s 3rd continued model [SYS-REQ-44]. Weights remain external.
+# confidence 0.25 is the report baseline, not a threshold optimized on test data.
+detector_node:
+  ros__parameters:
+    backend: yolo
+    model_sha256: "3d275b84378da06dc9202b4d40962f49f8d88d18062357d1d167abab10d6f920"
+    rate_hz: 8.0
+    window_s: 0.6
+    min_frames: 3
+    require_latest_hit: true
+    default_min_confidence: 0.25
+    infer_conf: 0.25
+    imgsz: 640
+    allow_unstamped: false
+    target_keys: [fridge_door, fridge, cucumber, user]
+    target_classes: [refrigerator, refrigerator, cucumber, person]
+
+orchestrator_node:
+  ros__parameters:
+    planner_mode: llm
+    detector_fail_open: false
+    precheck_timeout_s: 1.0
+    precheck_retry_s: 0.1

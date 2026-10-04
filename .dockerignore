@@ -9,3 +9,9 @@ log
 # never ship credentials in the context
 .env
 *.env
+
+# Local experiments and weights are mounted, never baked into deploy images.
+tmp
+*.pt
+*.onnx
+*.engine

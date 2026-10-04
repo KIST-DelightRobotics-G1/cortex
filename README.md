@@ -26,7 +26,7 @@ STT turns sound into symbols (perception), TTS is the robot acting (action).
 |---|---|---|---|
 | 1 | `g1_onboard_msgs` | — | Shared interfaces submodule (SSOT) — **do not fork** |
 | 2 | `cortex_msgs` | — | Cortex-internal: `PlanRequest` / `PlanStep` (LLM stream), `SubtaskCmd` / `SubtaskState` (nav·VLA contract, spec v0.1), `CheckTarget` srv, `TraceEvent` (display), `TaskStatus` |
-| 3 | `cortex_perception` | **인지** | `stt_node` (speech-band filter → Google STT → transcript, echo-cancelled), `detector_node` (YOLO presence check service; `backend: always` stub until the real detector lands) |
+| 3 | `cortex_perception` | **인지** | `stt_node` (speech-band filter → Google STT → transcript, echo-cancelled), `detector_node` (YOLO presence check service; local fine-tuned weights via `cortex.launch.py`; standard launch uses YOLO; llm_demo explicitly uses the stub) |
 | 4 | `cortex_cognition` | **상위 추론** | `llm_node` (utterance → streamed subtask lines, validated against `config/actions.yaml`), `orchestrator_node` (`planner_mode: llm` executes the stream over SubtaskCmd/State; `static` runs JSON5 scenarios) |
 | 5 | `cortex_action` | **제어** | `tts_node` (CLOVA Voice → 16 kHz `AudioPCM`, cancelable) |
 | 6 | `cortex_bringup` | — | Top-level launch + params |
@@ -103,8 +103,8 @@ set -a && source .env && set +a          # the nodes read os.environ directly
 ## Run
 
 ```bash
-./scripts/run_cortex.sh                       # env.sh + full node graph
-ros2 launch cortex_bringup cortex.launch.py   # same, if env.sh already sourced
+./scripts/run_cortex.sh                       # env.sh + full graph, real YOLO; model required
+ros2 launch cortex_bringup cortex.launch.py   # model path/device from cortex_params.yaml
 ros2 launch cortex_bringup speech.launch.py   # STT + TTS only (no cognition)
 ```
 
@@ -116,6 +116,9 @@ Parameters (topics, tick rate, cancel timeout) live in
 
 ---
 
+For local refrigerator/cucumber weights, launch settings and offline verification, see
+[Detector integration](docs/detector_integration.md).
+
 ## Docker
 
 Same pattern as `kist-gearsonic-inference` / `kist-vla-inference`: one self-contained
@@ -126,7 +129,7 @@ named container. Any host with Docker works — no ROS install needed on the hos
 docker/build.sh                                   # image: kist-cortex
 docker/run.sh                                     # shell inside, ROS already sourced
 docker/run.sh ros2 launch cortex_bringup cortex.launch.py
-docker/run.sh ros2 launch cortex_bringup llm_demo.launch.py backend:=gemini speech:=true
+CORTEX_GPUS=none docker/run.sh ros2 launch cortex_bringup llm_demo.launch.py backend:=gemini speech:=true
 ```
 
 - Credentials come from `.env` (`--env-file`, never baked in). Use
@@ -134,8 +137,12 @@ docker/run.sh ros2 launch cortex_bringup llm_demo.launch.py backend:=gemini spee
 - `--network host`, `ROS_DOMAIN_ID=0`, `DDS_PEER_IP` as in `env.sh`. The NIC name in
   `config/cyclonedds.xml` (`eno2`) must still match the host.
 - The TTS cache lives on the host (`~/.cache/cortex_tts`) and survives rebuilds.
-- Not in this image: detector_node's YOLO backend (runs as the `always` stub) and the
-  display renderer (cortex-gui has its own container).
+- The image includes CUDA 12.6 PyTorch and Ultralytics. run.sh exposes GPUs and mounts
+  `~/models/cortex` read-only at `/models/cortex`; weights stay external.
+- Use `CORTEX_GPUS=none` for CPU/demo and `device:=cpu` for real CPU inference.
+- The display renderer remains in cortex-gui's separate container.
+- See [standard YOLO deployment](docs/yolo_deployment.md) for model paths, GPU setup
+  and full site YAML overrides.
 - Env file, mounts and DDS settings are fixed when the container is created — after
   changing them, `docker rm -f kist-cortex` and run again.
 
@@ -186,7 +193,7 @@ Each `TODO(REQ-XX) [TASK-XX]` in code links to the matching Notion page.
 |---|---|
 | Gearsonic Handler interface | `navigation` / `vla` connector dispatch + cancel (stubs) |
 | Handler `CommandStatus` publishing | real stop-confirmation (`_stopped`, `assume_stopped=false`) |
-| Real detector | `detector_node` `backend: yolo` (YOLO26s; `cucumber` needs a fine-tuned weight) |
+| Camera / ROS hardware validation | Local YOLO26s/YOLO26x weight integration is implemented; DDS and live-camera validation remain pending |
 | nav-planner / VLA runner SubtaskCmd/State | executor runs against `mock_module_node` until then |
 | `kist-ext-sensor-io` | owns the `/bridge/*` audio publishers. We follow the ICD names; if that repo picks different ones, change `cortex_params.yaml` — not code |
 
@@ -196,8 +203,8 @@ Each `TODO(REQ-XX) [TASK-XX]` in code links to the matching Notion page.
 
 PRs are squash-merged to `main`. Conventions enforced in CI:
 
-- Branch name: `TASK-{number}` (Notion-linked work) or `chore/{description}` (non-task housekeeping)
-- PR title: `[TASK-{number}] <type>(<scope>)?: <subject>` or `[chore] <type>(<scope>)?: <subject>`
+- Branch name: `SYS-REQ-{number}[-description]` (SYS-REQ-linked work) or `chore/{description}` (non-task housekeeping)
+- PR title: `[SYS-REQ-{number}] <type>(<scope>)?: <subject>` or `[chore] <type>(<scope>)?: <subject>`
   (Conventional Commits, lowercase casing)
 
 ---
@@ -205,3 +212,7 @@ PRs are squash-merged to `main`. Conventions enforced in CI:
 ## License
 
 Apache-2.0
+
+Standard robot launch and Docker setup: [deployment guide](docs/yolo_deployment.md).
+Selected YOLO26s continued-model deployment and bounded prechecks: [v3 profile](docs/detector_v3.md).
+Latest-main H.264 / DONE-to-IDLE adaptation: [local verification](docs/detector_main_verification.md).

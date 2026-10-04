@@ -1,0 +1,7 @@
+# Detector runtime, installed in the standard Docker image.
+# For Linux CUDA: install requirements-torch-cu126.txt first.
+torch==2.7.1
+torchvision==0.22.1
+ultralytics==8.4.154
+# Newer OpenCV wheels require NumPy 2; Cortex's ROS environment pins NumPy 1.26.
+opencv-python==4.11.0.86

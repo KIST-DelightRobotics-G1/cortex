@@ -289,6 +289,8 @@ class OrchestratorNode(Node):
         self.declare_parameter('safe_stop_vla_s', 10.0)
         self.declare_parameter('plan_timeout_s', 20.0)
         self.declare_parameter('detector_fail_open', True)
+        self.declare_parameter('precheck_timeout_s', 0.0)
+        self.declare_parameter('precheck_retry_s', 0.1)
         self.declare_parameter('tts_prefetch_topic', '/cortex/tts/prefetch')
         self.declare_parameter('tts_warmup_topic', '/cortex/tts/warmup')
         self.declare_parameter('ack_phrase', '네.')      # spoken the moment a request goes to the LLM; '' = off
@@ -397,6 +399,8 @@ class OrchestratorNode(Node):
                                  'vla': float(g('safe_stop_vla_s').value)},
             plan_timeout_s=float(g('plan_timeout_s').value),
             detector_fail_open=bool(g('detector_fail_open').value),
+            precheck_timeout_s=float(g('precheck_timeout_s').value),
+            precheck_retry_s=float(g('precheck_retry_s').value),
         )
         ports = ex.Ports(
             now=self._now,
@@ -542,7 +546,7 @@ class OrchestratorNode(Node):
     def _check_target(self, target: str):
         """Synchronous detector query -> (found, detail). A non-empty detail with
         found=False means 'no verdict' (service missing / timeout / stale frame),
-        which the executor treats as fail-open."""
+        handled according to detector_fail_open and the bounded precheck policy."""
         if not self.det_client.service_is_ready():
             return False, 'no_detector'
         fut = self.det_client.call_async(CheckTarget.Request(target=target))
@@ -550,8 +554,14 @@ class OrchestratorNode(Node):
         while not fut.done() and time.monotonic() < deadline:
             time.sleep(0.005)
         if not fut.done():
+            fut.cancel()
             return False, 'detector_timeout'
-        r = fut.result()
+        try:
+            r = fut.result()
+        except Exception:
+            return False, 'detector_error'
+        if r is None:
+            return False, 'detector_error'
         return bool(r.found), (f'{r.label} {r.confidence:.2f}' if r.found else r.detail)
 
     def _trace(self, kind: int, plan_id: str, index: int, title: str, body: str) -> None:

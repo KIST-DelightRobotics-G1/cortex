@@ -48,7 +48,7 @@ class H264Decoder:
     def __init__(self) -> None:
         self._ctx = None
 
-    def decode(self, data, keyframe: bool):
+    def decode(self, data, keyframe: bool, stamp_ns: int | None = None):
         """Feed one frame's NAL units; returns the newest av.VideoFrame or None."""
         if self._ctx is None and not keyframe:
             return None
@@ -56,8 +56,20 @@ class H264Decoder:
         if self._ctx is None:
             self._ctx = av.CodecContext.create('h264', 'r')
         try:
-            frames = self._ctx.decode(av.Packet(bytes(data)))
+            packet = av.Packet(bytes(data))
+            if stamp_ns is not None:
+                from fractions import Fraction
+                packet.pts = int(stamp_ns)
+                packet.time_base = Fraction(1, 1_000_000_000)
+            frames = self._ctx.decode(packet)
         except Exception:                           # corrupt / out-of-order: resync on next keyframe
             self._ctx = None
             return None
         return frames[-1] if frames else None
+
+
+def decoded_stamp_ns(frame):
+    """Return the decoded frame's source PTS; missing timing is not freshness."""
+    if frame.pts is None or frame.time_base is None:
+        return None
+    return int(frame.pts * frame.time_base * 1_000_000_000)

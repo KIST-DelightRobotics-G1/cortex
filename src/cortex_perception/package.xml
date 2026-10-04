@@ -8,7 +8,7 @@
     can act on. stt_node (AudioPCM -> speech-band filter -> Google Cloud STT bidi
     streaming -> transcript, with SpeakerState-driven echo cancellation) and
     detector_node (camera -> YOLO presence of a vocabulary target, CheckTarget
-    service; 'always' stub backend until the real detector lands).
+    service; local YOLO backend or explicit 'always' demo stub).
     Endpointing comes from the STT backend's is_final results; there is no
     separate VAD.
   </description>
