@@ -50,9 +50,14 @@ under the v3 profile. `device:=cpu` is available without CUDA.
 3. An object passes only if a strict majority has confidence >= 0.25 **and the
    latest processed frame also has a qualifying detection**. This prevents a prior
    positive majority from overriding an already processed negative frame.
-4. Before dispatching a subtask, Cortex queries `CheckTarget`. If it cannot confirm
-   the target, it enters PRECHECK and retries at intervals of at least 0.1 seconds,
-   with a 1.0-second deadline. No VLA command is sent while waiting.
+4. Before checking objects, Cortex applies main's module-readiness gate. A
+   non-IDLE destination enters WAIT_READY; a leftover RUNNING command is cancelled
+   using the module's reported plan/index. The existing safe-stop timeout bounds
+   this wait. After IDLE, Cortex starts a fresh PRECHECK and queries `CheckTarget`.
+   If it cannot confirm the target, it retries at intervals of at least 0.1 seconds,
+   with a 1.0-second deadline starting at PRECHECK entry. No VLA command is sent
+   while waiting. If the module becomes busy during retries, Cortex returns to
+   WAIT_READY and rechecks all objects after the next IDLE; prior hits are discarded.
 5. A positive result before the deadline dispatches once. Persistent absence or
    unavailable input aborts the plan. Unknown/unsupported targets and invalid
    requests fail immediately. Fail-open is disabled.
@@ -105,6 +110,16 @@ Local regression coverage includes each single-object-only case, both visible,
 alternating positives, latest-frame loss, unavailable/unsupported input, shared
 timeout, stop, replacement plan, and the rewritten open/approach/take_out flow.
 ROS Humble and live camera/VLA verification remain required on the workstation.
+
+## VLA instruction configuration
+
+Main's `config/vla_prompts.yaml` is loaded via the orchestrator's
+`vla_prompts_path`. A populated action/argument entry is sent verbatim, including
+for inserted approach/step_back actions; it does not bypass any precheck.
+The shipped eight entries are empty and retain the existing template fallback
+with a warning. Before live VLA testing, the VLA team must supply the exact
+training/progress-head sentences described in that file. No sentences were
+invented during this integration. DONE/FAILED still come from the VLA module.
 
 ## Comparison and reproducibility
 

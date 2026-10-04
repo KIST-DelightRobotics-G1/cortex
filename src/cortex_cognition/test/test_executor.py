@@ -133,7 +133,9 @@ def test_step_timeout_cancels_and_fails():
     for _ in range(25):                           # module keeps reporting RUNNING
         h.state('nav', ex.RUNNING, 'p1', 0)
         h.advance(0.1)
-    assert h.cancels == [('nav', 'p1', 0)] and h.x.phase == 'STOPPING'
+    # one cancel (resent once if still unanswered after cancel_ack_s)
+    assert h.cancels[0] == ('nav', 'p1', 0) and len(h.cancels) <= 2
+    assert set(h.cancels) == {('nav', 'p1', 0)} and h.x.phase == 'STOPPING'
     assert (ex.S_FAILED, 0, 1, 'timeout') in h.statuses
     h.state('nav', ex.IDLE, '', 0, 'cancelled')   # rule 2: over only once the module is IDLE
     assert h.x.phase == 'IDLE'
@@ -389,7 +391,9 @@ def test_graceful_finish_is_cancelled_after_the_step_timeout():
     for _ in range(25):                           # a vla that never reports DONE
         h.state('vla', ex.RUNNING, 'p1', 1)
         h.advance(0.1)
-    assert h.cancels == [('vla', 'p1', 1)] and h.x.phase == 'STOPPING'
+    # one cancel (resent once if still unanswered after cancel_ack_s)
+    assert h.cancels[0] == ('vla', 'p1', 1) and len(h.cancels) <= 2
+    assert set(h.cancels) == {('vla', 'p1', 1)} and h.x.phase == 'STOPPING'
     h.state('vla', ex.IDLE, '', 0, 'cancelled')
     assert h.x.phase == 'IDLE'
 
@@ -657,3 +661,180 @@ def test_take_out_with_demo_rewrite_checks_both_after_approach():
     visible.add('cucumber')
     h.advance(.2)
     assert [c[2] for c in h.cmds] == ['open', 'approach', 'take_out']
+
+
+# --- rule 1: a Cmd goes only to an IDLE module (no preemption by Cmd) ------------------
+
+def test_new_plan_waits_for_the_module_to_finish_its_failed_burst():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER[:1])
+    h.state('nav', ex.RUNNING, 'p1', 0)
+    h.state('nav', ex.FAILED, 'p1', 0, 'no path')  # plan p1 abandoned at the first FAILED
+    assert h.x.phase == 'IDLE'
+    h.x.heard('p2', '테이블로 가')
+    h.x.on_step('p2', SUB, 0, 'move_to', ['table'], '테이블로 갑니다.', '', '')
+    assert h.cmds == [('nav', 0, 'move_to', 'p1')]  # nav is still FAILED → not sent yet
+    assert h.x._st == 'WAIT_READY' and h.cancels == []
+    h.state('nav', ex.FAILED, 'p1', 0, 'no path')
+    h.state('nav', ex.IDLE, '', 0)
+    assert h.cmds[-1] == ('nav', 0, 'move_to', 'p2') and h.x._st == 'ACCEPT'
+
+
+def test_leftover_running_module_is_cancelled_before_the_next_cmd():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER[:1])
+    h.advance(1.2)                                # not accepted → p1 abandoned
+    assert h.x.phase == 'IDLE' and len(h.cmds) == 2
+    h.state('nav', ex.RUNNING, 'p1', 0)           # …but the module started it late
+    h.x.heard('p2', '테이블로 가')
+    h.x.on_step('p2', SUB, 0, 'move_to', ['table'], '테이블로 갑니다.', '', '')
+    assert h.cancels == [('nav', 'p1', 0)] and len(h.cmds) == 2
+    h.state('nav', ex.IDLE, '', 0, 'cancelled')
+    assert h.cmds[-1] == ('nav', 0, 'move_to', 'p2')
+
+
+def test_module_that_never_frees_up_gets_no_cmd():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER[:1])
+    h.advance(1.2)                                # not accepted → abandoned
+    h.state('nav', ex.RUNNING, 'p1', 0)
+    h.x.heard('p2', '테이블로 가')
+    h.x.on_step('p2', SUB, 0, 'move_to', ['table'], '테이블로 갑니다.', '', '')
+    for _ in range(35):                           # past safe_stop nav 3 s, still RUNNING
+        h.state('nav', ex.RUNNING, 'p1', 0)
+        h.advance(0.1)
+    assert h.x.phase == 'IDLE' and len(h.cmds) == 2   # p2 never sent
+    assert planner.phrase(CFG, 'stop_failed') in h.says
+    assert (ex.S_FAILED, 0, 1, 'module not idle') in h.statuses
+
+
+def test_unanswered_cancel_is_resent_once():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER[:1])
+    h.state('nav', ex.RUNNING, 'p1', 0)
+    h.x.stop('user')
+    for _ in range(20):                           # keeps RUNNING, no cancel_deferred
+        h.state('nav', ex.RUNNING, 'p1', 0)
+        h.advance(0.1)
+    assert h.cancels == [('nav', 'p1', 0), ('nav', 'p1', 0)]
+    h.state('nav', ex.IDLE, '', 0, 'cancelled')
+    assert h.x.phase == 'IDLE'
+
+
+def test_deferred_cancel_is_not_resent():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER[:2])
+    run_step(h, 'nav', 'p1', 0)
+    h.state('vla', ex.RUNNING, 'p1', 1)
+    h.x.stop('user')
+    for _ in range(20):                           # going to its safe point
+        h.state('vla', ex.RUNNING, 'p1', 1, 'cancel_deferred: hand on handle')
+        h.advance(0.1)
+    assert h.cancels == [('vla', 'p1', 1)]
+    h.state('vla', ex.IDLE, '', 0, 'cancelled_at_safe_point')
+    assert h.x.phase == 'IDLE'
+
+
+# Integration of main's module readiness with bounded, multi-target checks.
+def test_take_out_waits_for_idle_before_starting_its_precheck_deadline():
+    queries = []
+    visible = {'fridge'}
+    h = waiting_harness(lambda t: (queries.append(t) or t in visible, ''))
+    h.state('vla', ex.RUNNING, 'old', 7)
+    begin_take_out(h)
+    assert h.x._st == 'WAIT_READY' and queries == [] and not h.cmds
+    assert h.cancels == [('vla', 'old', 7)]
+    h.advance(2.0)  # Longer than the precheck budget, but still waiting for IDLE.
+    h.state('vla', ex.IDLE, '', 0)
+    assert h.x._st == 'PRECHECK' and queries == ['fridge', 'cucumber']
+    h.advance(.5)
+    visible.add('cucumber')
+    h.advance(.1)
+    assert h.cmds == [('vla', 0, 'take_out', 'p1')]
+
+
+def test_take_out_readiness_timeout_never_queries_or_dispatches():
+    queries = []
+    h = waiting_harness(lambda t: (queries.append(t) or True, ''))
+    h.state('vla', ex.FAILED, 'old', 7)
+    begin_take_out(h)
+    h.advance(10.2)
+    h.state('vla', ex.IDLE, '', 0)
+    assert h.x.phase == 'IDLE' and not queries and not h.cmds
+    assert any(d == 'module not idle' for _, _, _, d in h.statuses)
+
+
+def test_take_out_busy_during_retry_rechecks_both_after_idle():
+    queries = []
+    visible = {'fridge'}
+    h = waiting_harness(lambda t: (queries.append(t) or t in visible, ''))
+    begin_take_out(h)
+    assert queries == ['fridge', 'cucumber']
+    h.state('vla', ex.RUNNING, 'old', 7)
+    h.advance(.2)
+    assert h.x._st == 'WAIT_READY' and queries == ['fridge', 'cucumber']
+    assert h.cancels == [('vla', 'old', 7)] and not h.cmds
+    visible.clear()
+    visible.add('cucumber')  # The old fridge hit must not carry over.
+    h.state('vla', ex.IDLE, '', 0)
+    assert queries[-2:] == ['fridge', 'cucumber']
+    assert h.x._st == 'PRECHECK' and h.x._precheck_target == 'fridge' and not h.cmds
+    visible.add('fridge')
+    h.advance(.2)
+    assert h.cmds == [('vla', 0, 'take_out', 'p1')]
+
+
+def test_take_out_ready_guard_also_applies_after_successful_queries():
+    h = waiting_harness()
+    def detector(target):
+        if target == 'cucumber':
+            h.state('vla', ex.RUNNING, 'old', 7)
+        return True, ''
+    h.detector = detector
+    begin_take_out(h)
+    assert h.x._st == 'WAIT_READY' and not h.cmds
+    h.detector = lambda t: (t == 'fridge', '')
+    h.state('vla', ex.IDLE, '', 0)
+    assert h.x._st == 'PRECHECK' and not h.cmds
+    assert h.x._precheck_target == 'cucumber'
+
+
+def test_take_out_replacement_during_ready_wait_still_requires_both():
+    queries = []
+    h = waiting_harness(lambda t: (queries.append(t) or t == 'fridge', ''))
+    h.state('vla', ex.DONE, 'old', 7)
+    begin_take_out(h)
+    begin_take_out(h, 'p2')
+    assert h.x.plan_id == 'p2' and h.x._st == 'WAIT_READY' and not queries
+    h.state('vla', ex.IDLE, '', 0)
+    assert queries == ['fridge', 'cucumber'] and not h.cmds
+    h.x.stop()
+    h.detector = lambda t: (True, '')
+    h.advance(.2)
+    assert h.x.phase == 'IDLE' and not h.cmds and not h.cancels
+
+
+def test_take_out_training_sentence_survives_ready_and_precheck_gates(tmp_path):
+    sentence = 'Take out the cucumber.  Keep this exact sentence.'
+    path = tmp_path / 'prompts.yaml'
+    path.write_text('prompts:\n  "take_out(cucumber,fridge)": "' + sentence + '"\n',
+                    encoding='utf-8')
+    prompts, empty = planner.load_vla_prompts(str(path), CFG['actions'])
+    assert not empty
+    h = waiting_harness(lambda t: (t == 'fridge', ''))
+    h.x.cfg = {**CFG, 'vla_prompts': prompts}
+    sent = []
+    h.x.p.send_cmd = lambda which, step, pid: sent.append((step.instruction, pid))
+    h.state('vla', ex.DONE, 'old', 7)
+    begin_take_out(h)
+    assert not sent
+    h.state('vla', ex.IDLE, '', 0)
+    assert h.x._st == 'PRECHECK' and not sent
+    h.detector = lambda t: (True, '')
+    h.advance(.2)
+    assert sent == [(sentence, 'p1')]

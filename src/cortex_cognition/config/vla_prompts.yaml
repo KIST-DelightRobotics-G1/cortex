@@ -1,0 +1,27 @@
+# vla_prompts.yaml — VLA 학습 문장 표 (시연용). **VLA 팀이 채운다.**
+#
+# 오케스트레이터는 VLA 단계의 instruction 으로 이 표의 문장을 글자 그대로 보낸다.
+# VLA 의 진행도 헤드는 probes.json 의 키 문장과 **글자까지 같은** instruction 에만 붙는다 —
+# 다르면 진행도 판정이 없어 DONE 이 오지 않고, 단계 타임아웃(30 s)으로 끝난다.
+#
+# 채우는 법
+#   값 = probes.json 의 키 문장을 그대로 복사 (마침표 · 공백 · 대소문자 포함), 큰따옴표로 감싼다.
+#   문장 안에 큰따옴표가 있으면 \" 로 쓴다.
+#   아직 헤드가 없는 동작은 "" 로 둔다 → 템플릿 문장(actions.yaml)을 보내고 경고를 남긴다.
+#
+# 키 = 동작(인자) — 오케스트레이터 어휘 키, 인자는 쉼표로 (공백 무시).
+#   LLM 계획이 같은 일을 다른 동작으로 낼 수 있어(pick / take_out) 둘 다 둔다.
+#   approach · step_back 은 시연 보정으로 끼워 넣는 동작이다 (plan_rewrites.yaml).
+#
+# 확인: orchestrator_node 기동 로그의 "vla prompts: N filled" 와 "NOT FILLED" 목록.
+# 이 파일을 지우거나 vla_prompts_path: '' 로 두면 모든 VLA 단계가 템플릿 문장을 쓴다.
+
+prompts:
+  "open(fridge_door)":          ""    # 냉장고 문 열기     (템플릿: Open the refrigerator door.)
+  "approach(fridge)":           ""    # 냉장고로 다가가기   (템플릿: Approach the refrigerator.)
+  "pick(cucumber)":             ""    # 오이 집기          (템플릿: Pick up the cucumber.)
+  "take_out(cucumber,fridge)":  ""    # 오이 꺼내기        (템플릿: Take the cucumber out of the refrigerator.)
+  "step_back(fridge)":          ""    # 냉장고에서 물러서기 (템플릿: Step back from the refrigerator.)
+  "close(fridge_door)":         ""    # 냉장고 문 닫기     (템플릿: Close the refrigerator door.)
+  "place(cucumber,table)":      ""    # 오이 테이블에 놓기  (템플릿: Place the cucumber on the table.)
+  "handover(cucumber,user)":    ""    # 오이 건네기        (템플릿: Hand the cucumber to the person.)
