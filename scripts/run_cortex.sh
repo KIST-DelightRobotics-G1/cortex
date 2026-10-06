@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Launch the full cortex node graph on the workstation PC.
 # Assumes the workspace is built and env.sh has configured ROS + DDS.
-set -euo pipefail
+# No -u: ROS's setup.bash reads variables it never sets (AMENT_TRACE_SETUP_FILES, ...)
+# and nounset aborts the script on the first one.
+set -eo pipefail
 
 _here="$( cd "$( dirname "${BASH_SOURCE[0]:-$0}" )/.." && pwd )"
 cd "${_here}"
