@@ -52,7 +52,7 @@ cortex는 마이크·카메라를 직접 열지 않고 `ext-sensor-io`가 발행
 **cortex보다 먼저 ext-sensor-io가 떠 있어야 한다.**
 
 ```bash
-ros2 topic hz /kist/mic/array/audio
+ros2 topic hz /kist/mic/uno/audio
 ```
 
 | 결과 | 판정 |
@@ -73,8 +73,8 @@ ros2 topic hz /kist/camera/head/color/h264
 | `/kist/mic/array/audio` | reSpeaker Flex XVF3800 | 16 kHz, 6채널. **빔포밍·에코 감소 적용됨** |
 | `/kist/mic/uno/audio` | ESI NEVA UNO | 44.1 kHz, 2채널. 빔포밍·에코 감소 **없음** |
 
-cortex 기본값은 `array`다. `uno`를 쓰려면 `stt_node.audio_topic`을 바꿔야 하고,
-이때 하드웨어 에코 억제가 없어지므로 §4 에코 점검이 더 중요해진다.
+cortex 기본값은 데모 PC의 `uno`다. 하드웨어 에코 억제가 없으므로 §4 에코 점검이
+중요하다. 로봇의 `array`를 쓰려면 `stt_node.audio_topic`을 바꾼다.
 
 ### 1-2. cortex 기동
 
@@ -110,7 +110,7 @@ ros2 node list
 ```
 [stt_node]  stt_node up (backend=google_cloud, model=latest_short, end_timeout=0.5s [v2 only], lang=ko-KR, ...)
 [tts_node]  tts_node up (backend=naver_clova, voice=nara, say=/cortex/tts/say -> /cortex/tts/audio)
-[llm_node]  llm_node up (backend=dummy, model=gemini-3.6-flash, 20 actions, 5 places)
+[llm_node]  llm_node up (backend=gemini, model=gemini-3.6-flash, 20 actions, 5 places)
 [orchestrator_node] orchestrator_node up (mode=llm, tick=10.0Hz)
 ```
 
@@ -128,8 +128,8 @@ ros2 node list
 ```bash
 ros2 param get /stt_node model          # → latest_short  (default 가 나오면 재빌드 필요)
 ros2 param get /stt_node backend        # → google_cloud
-ros2 param get /stt_node audio_topic    # → /kist/mic/array/audio
-ros2 param get /llm_node backend        # → dummy 또는 gemini
+ros2 param get /stt_node audio_topic    # → /kist/mic/uno/audio
+ros2 param get /llm_node backend        # → gemini (dummy 면 GOOGLE_API_KEY 가 없는 것)
 ros2 param get /orchestrator_node planner_mode   # → llm
 ```
 
@@ -231,9 +231,9 @@ ros2 topic echo /cortex/llm/step
 | `2` REPLY | 계획 없이 대답만 (잡담·거부) |
 | `3` ERROR | 실패 — `detail` 확인 |
 
-> `llm_node`가 `backend=dummy`면 실제 LLM이 아니라 예시 문장을 재생한다.
-> 실제 LLM로 보려면: `ros2 launch cortex_bringup cortex.launch.py llm_backend:=gemini`
-> (`.env`에 `GOOGLE_API_KEY` 필요)
+> `llm_node`가 `backend=dummy`면 실제 LLM이 아니라 예시 문장을 재생한다. 기본은
+> `gemini`이며 `.env`에 `GOOGLE_API_KEY`가 없으면 dummy로 떨어진다. 키 없이 일부러
+> 오프라인으로 보려면: `ros2 launch cortex_bringup cortex.launch.py llm_backend:=dummy`
 
 ### 3-3. TTS 단독 확인
 
@@ -399,11 +399,11 @@ ros2 topic hz /cortex/trace       # 생각의 흐름 이벤트
 
 ```bash
 source env.sh
-ros2 topic hz /kist/mic/array/audio          # Ctrl-C 로 중단. 10 Hz 근처여야 함
+ros2 topic hz /kist/mic/uno/audio            # Ctrl-C 로 중단. 10 Hz 근처여야 함
 ros2 node list                               # 7개
 ros2 param get /stt_node model                # latest_short
 ros2 param get /stt_node backend              # google_cloud
-ros2 param get /llm_node backend              # dummy | gemini
+ros2 param get /llm_node backend              # gemini
 ros2 param get /orchestrator_node planner_mode  # llm
 ros2 topic info /cortex/tts/audio             # Subscriber count: 1
 ros2 service list | grep detector             # /cortex/detector/check
