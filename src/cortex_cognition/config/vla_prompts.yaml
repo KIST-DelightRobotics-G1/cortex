@@ -17,9 +17,9 @@
 # 이 파일을 지우거나 vla_prompts_path: '' 로 두면 모든 VLA 단계가 템플릿 문장을 쓴다.
 
 prompts:
-  "open(fridge_door)":          ""    # 냉장고 문 열기     (템플릿: Open the refrigerator door.)
-  "approach(fridge)":           ""    # 냉장고로 다가가기   (템플릿: Approach the refrigerator.)
-  "pick(cucumber)":             ""    # 오이 집기          (템플릿: Pick up the cucumber.)
+  "open(fridge_door)":          "Touch inside the red marker with the right hand and push the fridge door open with the left hand."    # 냉장고 문 열기     (템플릿: Open the refrigerator door.)
+  "approach(fridge)":           "Walk up to the fridge until it is within arm's reach."    # 냉장고로 다가가기   (템플릿: Approach the refrigerator.)
+  "pick(cucumber)":             "Reach out with the right hand and pick up the cucumber inside the fridge."    # 오이 집기          (템플릿: Pick up the cucumber.)
   "take_out(cucumber,fridge)":  ""    # 오이 꺼내기        (템플릿: Take the cucumber out of the refrigerator.)
   "step_back(fridge)":          ""    # 냉장고에서 물러서기 (템플릿: Step back from the refrigerator.)
   "close(fridge_door)":         ""    # 냉장고 문 닫기     (템플릿: Close the refrigerator door.)
