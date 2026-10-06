@@ -4,9 +4,11 @@
 
 stt_node:
   ros__parameters:
-    # ext-sensor-io mic (kist_msgs/AudioChunk, interleaved S16_LE). The reSpeaker
-    # XVF3800 array is 16 kHz x 6: channel 0 is its processed (beamformed) output.
-    audio_topic: /kist/mic/array/audio
+    # ext-sensor-io mic (kist_msgs/AudioChunk, interleaved S16_LE, resampled to
+    # sample_rate_hz here). Demo PC: ESI NEVA UNO, 44.1 kHz x 2, no hardware echo
+    # suppression. Robot: /kist/mic/array/audio, reSpeaker XVF3800 16 kHz x 6
+    # (channel 0 = its processed, beamformed output).
+    audio_topic: /kist/mic/uno/audio
     mic_channel: 0
     speaker_state_topic: /cortex/speaker/state         # speaker_node: mic muted while it plays
     transcript_topic: /cortex/stt/transcript
@@ -112,7 +114,7 @@ llm_node:
     step_topic: /cortex/llm/step
     # actions_path: default = installed share/cortex_cognition/config/actions.yaml
     # Per-run override without editing this file: cortex.launch.py llm_backend:=gemini
-    backend: dummy                       # dummy | gemini | openai
+    backend: gemini                      # dummy | gemini | openai (no GOOGLE_API_KEY -> falls back to dummy)
     model: gemini-3.6-flash              # gemini: GOOGLE_API_KEY; openai: OPENAI_API_KEY (env)
     request_timeout_s: 20.0
     dummy_line_delay_s: 0.15             # dummy backend: per-line delay to mimic streaming
