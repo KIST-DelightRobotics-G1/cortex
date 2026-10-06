@@ -3,7 +3,7 @@
 **KIST DRL — Unitree G1 Cognitive / Reasoning Stack (PC)**
 
 Event-driven ROS 2 rclpy workspace for the PC running the KIST G1 collaborative demo (2026).
-Speech I/O, scenario orchestration, VLM success judgment.
+Speech I/O, scenario orchestration, YOLO presence prechecks.
 
 Replaces the OM1 fork (`kist-drl-g1-workstation`): no tick-blocking LLM cortex, and one
 DDS graph shared with the NX instead of a hand-rolled relay.
@@ -11,8 +11,15 @@ DDS graph shared with the NX instead of a hand-rolled relay.
 > Target HW: PC (Ubuntu 22.04, ROS 2 Humble, Python 3.10)
 > Companion repo: `kist-drl-g1-onboard` (NX side — sensors / safety / motors)
 
-> 🚧 **Scaffold.** Backends (STT / TTS / VLM) and the motion connectors are placeholders.
+> **Status.** Speech (Google STT v1, CLOVA TTS, robot speaker) and the local YOLO
+> detector are implemented and measured; `vlm_node` was dropped in favour of the
+> detector precheck. The **motion connectors (nav / VLA) are still stubs** and run
+> against `mock_module_node` — see *Blocked on external specs*.
 > Markers `TODO(REQ-XX) [TASK-XX]` link back to the Notion DBs.
+
+> Running the stack or checking a demo? Go straight to the
+> [운용 점검 가이드 (operations checklist)](docs/operations_checklist.md) — step-by-step
+> commands with expected output for every stage.
 
 ---
 
@@ -25,10 +32,10 @@ STT turns sound into symbols (perception), TTS is the robot acting (action).
 | # | Package | Layer | Notes |
 |---|---|---|---|
 | 1 | `g1_onboard_msgs` | — | Shared interfaces submodule (SSOT) — **do not fork** |
-| 2 | `cortex_msgs` | — | Cortex-internal: `PlanRequest` / `PlanStep` (LLM stream), `SubtaskCmd` / `SubtaskState` (nav·VLA contract, spec v0.1), `CheckTarget` srv, `TraceEvent` (display), `TaskStatus` |
+| 2 | `cortex_msgs` | — | Cortex-internal: `PlanRequest` / `PlanStep` (LLM stream), `SubtaskCmd` / `SubtaskState` (nav·VLA contract, spec v0.1), `CheckTarget` srv, `ActionCmd` (say), `Detection` / `DetectionArray`, `TraceEvent` (display), `TaskStatus` |
 | 3 | `cortex_perception` | **인지** | `stt_node` (speech-band filter → Google STT → transcript, echo-cancelled), `detector_node` (YOLO presence check service; local fine-tuned weights via `cortex.launch.py`; standard launch uses YOLO; llm_demo explicitly uses the stub) |
 | 4 | `cortex_cognition` | **상위 추론** | `llm_node` (utterance → streamed subtask lines, validated against `config/actions.yaml`), `orchestrator_node` (`planner_mode: llm` executes the stream over SubtaskCmd/State; `static` runs JSON5 scenarios) |
-| 5 | `cortex_action` | **제어** | `tts_node` (CLOVA Voice → 16 kHz `AudioPCM`, cancelable) |
+| 5 | `cortex_action` | **제어** | `tts_node` (CLOVA Voice → 16 kHz `AudioPCM`, PCM cache + prefetch, cancelable), `speaker_node` (→ Unitree `AudioClient`; publishes `SpeakerState` so `stt_node` mutes the mic) |
 | 6 | `cortex_bringup` | — | Top-level launch + params |
 
 Named `cortex_cognition`, not `_reasoning`: the VLA and Gearsonic policies run
@@ -89,14 +96,16 @@ pip install -r requirements.txt          # non-ROS deps (json5, numpy/scipy, STT
 
 colcon build --symlink-install
 
-# Credentials — Google STT + CLOVA TTS. .env is gitignored; never commit real keys.
+# Credentials — Google STT, Gemini, CLOVA TTS. .env is gitignored; never commit real keys.
 cp .env.example .env
 $EDITOR .env
-set -a && source .env && set +a          # the nodes read os.environ directly
+source env.sh                            # env.sh sources .env itself; nothing to export by hand
 ```
 
-> No credentials? `stt_node` runs with `backend: dummy` (no cloud, decodes fed text),
-> and `tts_node` warns + drops instead of crashing.
+> Missing credentials never crash the graph, but each layer degrades differently:
+> `llm_node` logs an error and **falls back to `dummy` on its own**; `stt_node` and
+> `tts_node` do **not** fall back — STT keeps retrying the cloud and TTS warns and
+> drops, so set `stt_node.backend: dummy` explicitly for a no-credential run.
 
 ---
 
@@ -105,8 +114,16 @@ set -a && source .env && set +a          # the nodes read os.environ directly
 ```bash
 ./scripts/run_cortex.sh                       # env.sh + full graph, real YOLO; model required
 ros2 launch cortex_bringup cortex.launch.py   # model path/device from cortex_params.yaml
-ros2 launch cortex_bringup speech.launch.py   # STT + TTS only (no cognition)
+ros2 launch cortex_bringup speech.launch.py   # audio path only: stt + tts + speaker (no cognition)
+
+# Per-run overrides (empty = keep the YAML value)
+ros2 launch cortex_bringup cortex.launch.py llm_backend:=gemini   # dummy | gemini | openai
+ros2 launch cortex_bringup cortex.launch.py device:=cpu detector_only:=true
 ```
+
+The full graph is **7 nodes**: `detector_node`, `stt_node`, `llm_node`,
+`orchestrator_node`, `tts_node`, `speaker_node`, `gui_bridge_node`. A missing one
+is a startup failure — check it with `ros2 node list`.
 
 Parameters (topics, tick rate, cancel timeout) live in
 `src/cortex_bringup/config/cortex_params.yaml`.
@@ -162,16 +179,32 @@ Those modules speak plain DDS, not ROS, so the type names on the wire must be th
 form (`pkg::msg::dds_::Name_`) for cortex to read them — ext-sensor-io's mic and camera
 types match `src/kist_msgs`, and the subtask contract matches `cortex_msgs`.
 
-| From ext-sensor-io | cortex reads it as | Used by |
+ext-sensor-io names its topics `rt/kist/<kind>/<name>/…`, where `<name>` is the entry
+in **its** `config/config.yaml` — so the set below changes when that repo's config does.
+cortex consumes the first and third rows by default (`cortex_params.yaml`).
+
+| From ext-sensor-io | cortex reads it as | Notes |
 |---|---|---|
-| `rt/kist/mic/array/audio` | `/kist/mic/array/audio` · `kist_msgs/AudioChunk` (16 kHz × 6, channel 0 used) | stt_node |
-| `rt/kist/camera/head/color/h264` | `/kist/camera/head/color/h264` · `kist_msgs/CompressedColorFrame` (decoded with PyAV) | gui_bridge_node, detector_node |
+| `rt/kist/mic/array/audio` | `/kist/mic/array/audio` · `kist_msgs/AudioChunk` | reSpeaker Flex XVF3800, 16 kHz × 6ch. **Channel 0 is the beamformed, echo-reduced output** — the default for `stt_node` |
+| `rt/kist/mic/uno/audio` | `/kist/mic/uno/audio` · `kist_msgs/AudioChunk` | ESI NEVA UNO, **44.1 kHz × 2ch** (rate is the device clock). Plain interface: **no beamforming and no hardware echo reduction**, so the `SpeakerState` mic mute matters more. `stt_node` resamples to 16 kHz |
+| `rt/kist/camera/{head,left_wrist,right_wrist}/color/h264` | `/kist/camera/head/color/h264` | `kist_msgs/CompressedColorFrame`, decoded with PyAV. gui_bridge_node, detector_node |
+| `rt/kist/camera/<name>/depth/rvl` | — | RVL depth; not consumed by cortex today |
+
+Mic chunks are 100 ms, so a healthy topic reads ~10 Hz under `ros2 topic hz`.
 
 Speech out: `tts_node` → `/cortex/tts/audio` → `speaker_node` → Unitree `AudioClient.PlayStream`
 (DDS RPC to the G1 audio service `voice`) → robot speaker. `speaker_node` publishes
 `/cortex/speaker/state` so `stt_node` mutes the mic while it plays. The audio service runs
 on the G1 internal PC, listed as `DDS_ROBOT_IP` (default `192.168.123.161` — verify on the
 robot) as an extra peer next to multicast discovery.
+
+> **Obsolete `/bridge/*` names.** Before `speaker_node` existed, TTS audio went to
+> `/bridge/cmd/audio_out` and the mic mute read `/bridge/audio/speaker_state`, both
+> expected from a comm_bridge. **That bridge was never built** — ext-sensor-io
+> publishes `rt/kist/*` directly ("with no bridge", per its IDL). A checkout still
+> pointing at `/bridge/*` has **no publisher for speaker state and no subscriber for
+> the audio**, so the mic is never muted and nothing is ever played. Point both at
+> the `/cortex/*` names above.
 
 ---
 
@@ -196,7 +229,7 @@ Each `TODO(REQ-XX) [TASK-XX]` in code links to the matching Notion page.
 | Handler `CommandStatus` publishing | real stop-confirmation (`_stopped`, `assume_stopped=false`) |
 | Camera / ROS hardware validation | Local YOLO26s/YOLO26x weight integration is implemented; DDS and live-camera validation remain pending |
 | nav-planner / VLA runner SubtaskCmd/State | executor runs against `mock_module_node` until then |
-| `kist-ext-sensor-io` | owns the `/bridge/*` audio publishers. We follow the ICD names; if that repo picks different ones, change `cortex_params.yaml` — not code |
+| `ext-sensor-io` mic/camera names | cortex follows whatever `name:` entries that repo's `config/config.yaml` declares. If they change, change `cortex_params.yaml` — **not code** |
 
 ---
 
