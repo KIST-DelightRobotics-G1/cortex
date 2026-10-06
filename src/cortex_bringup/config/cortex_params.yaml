@@ -20,7 +20,7 @@ stt_node:
     # v2 (backend: google_cloud_v2) needs roles/speech.client on the service
     # account; pending on the KIST project. Then: model chirp_3, end timeout 0.5.
     location: global             # v2 endpoint region; chirp_3 is not served everywhere (try us-central1)
-    speech_end_timeout_s: 0.5    # v2: flush the final result this long after speech stops (0 = server default)
+    speech_end_timeout_s: 1.0    # v1/v2: close stream after detected speech ends (0 = unset)
     language_code: ko-KR
     sample_rate_hz: 16000        # STT input rate; mic chunks are resampled to it
     interim_results: false       # false = publish only is_final transcripts

@@ -1,7 +1,7 @@
 """stt_node — streaming Speech-to-Text [REQ-27].
 
 Port of the workstation STTProvider (TASK-42) to rclpy. The DSP, echo-cancel and
-Google streaming logic are carried over unchanged; only the transport swapped:
+Google streaming logic use ROS transport with explicit v1 stream half-close:
 UnitreeG1Provider push callbacks -> ROS subscriptions.
 
     AudioChunk (/kist/mic/array/audio, ch 0) -> filter -> queue -> backend worker
@@ -21,8 +21,8 @@ Backends (parameter ``backend``):
                      ``location`` (global | asia-northeast3 | us-central1 …);
                      ``speech_end_timeout_s`` > 0 ends the stream after that much
                      silence following speech, which forces the final result out
-                     early (the worker reopens the stream at once; queued audio is
-                     not lost). This is the knob v1 does not have.
+                     early. v1 also supports this timeout; both backends reopen
+                     the stream after completion.
     dummy            text-as-PCM for offline runs.
 
 One module by convention (see task_srv_provider.py: no pytest infra, so the
@@ -121,6 +121,7 @@ class STTState(str, Enum):
     """Connection state, published for GUI display.
 
     start()           : IDLE -> CONNECTING -> STREAMING
+    v1 end event     : STREAMING -> DRAINING -> CONNECTING -> STREAMING
     gRPC stream error : STREAMING -> RECONNECTING -> STREAMING (or FAILED)
     stop()            : any -> IDLE
     """
@@ -128,6 +129,7 @@ class STTState(str, Enum):
     IDLE = 'idle'
     CONNECTING = 'connecting'
     STREAMING = 'streaming'
+    DRAINING = 'draining'           # v1 send side closed; receiving final results
     RECONNECTING = 'reconnecting'
     FAILED = 'failed'
 
@@ -154,8 +156,8 @@ class STTConfig:
     model: str = 'default'
     # v2 only: regional endpoint (chirp_3 is not served from every region).
     location: str = 'global'
-    # v2 only: 0 = server default endpointing. >0 = close the stream this many
-    # seconds after speech stops (final result is flushed at that moment).
+    # v1/v2: 0 leaves the server timeout unset. >0 requests stream closure
+    # after this much audio without speech following a speech-end event.
     speech_end_timeout_s: float = 0.0
     # Speech band IIR filter (HPF + LPF).
     highpass_hz: float = 120.0   # Hz — removes low-freq vibration / DC
@@ -168,6 +170,47 @@ class STTConfig:
     # actual audio by ~50-100 ms. Default 0 — the right value depends on the
     # observed LAN latency, and it needs a tts->stt onset signal to be useful.
     echo_cancel_lead_ms: int = 0
+
+
+class _GoogleAudioRequests:
+    """A session's send side, closable from the response thread.
+
+    Closing serializes with dequeueing so an old SDK request consumer cannot
+    take audio belonging to the next session. A request already returned to the
+    SDK may still be in flight. Never hold the lock while waiting for more audio.
+    """
+
+    def __init__(self, audio_queue, stop_event, request_type):
+        self._queue = audio_queue
+        self._stop = stop_event
+        self._request_type = request_type
+        self._closed = threading.Event()
+        self._lock = threading.Lock()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        while True:
+            with self._lock:
+                if self._closed.is_set() or self._stop.is_set():
+                    raise StopIteration
+                try:
+                    chunk = self._queue.get_nowait()
+                except queue.Empty:
+                    pass
+                else:
+                    if chunk is None:
+                        self._closed.set()
+                        raise StopIteration
+                    return self._request_type(audio_content=chunk)
+            self._closed.wait(timeout=0.02)
+
+    def close(self):
+        # Returning StopIteration half-closes gRPC; cancelling the RPC here
+        # would discard any final recognition results still on the receive side.
+        with self._lock:
+            self._closed.set()
 
 
 # ===========================================================================
@@ -248,8 +291,7 @@ class SttNode(Node):
         self.get_logger().info(
             f"stt_node up (backend={self._config.backend.value}, "
             f"model={self._config.model}, "
-            f"end_timeout={self._config.speech_end_timeout_s}s"
-            f"{'' if self._config.backend is STTBackend.GOOGLE_CLOUD_V2 else ' [v2 only]'}, "
+            f"end_timeout={self._config.speech_end_timeout_s}s, "
             f"lang={self._config.language_code}, rate={self._config.sample_rate_hz}, "
             f"audio={g('audio_topic').value} -> {g('transcript_topic').value})")
 
@@ -385,26 +427,15 @@ class SttNode(Node):
 
     # --- Google Cloud STT backend -----------------------------------------
     def _google_request_gen(self):
-        """Yield StreamingRecognizeRequest objects consumed from the audio queue."""
-        try:
-            from google.cloud import speech
-        except ImportError:
-            self.get_logger().error(
-                'google-cloud-speech not installed — pip install -r requirements.txt')
-            return
-
-        while not self._stop_event.is_set():
-            try:
-                chunk = self._audio_queue.get(timeout=0.02)
-            except queue.Empty:
-                continue
-            if chunk is None:  # poison pill
-                break
-            yield speech.StreamingRecognizeRequest(audio_content=chunk)
+        """Return the independently closable audio iterator for one v1 RPC."""
+        from google.cloud import speech
+        return _GoogleAudioRequests(
+            self._audio_queue, self._stop_event, speech.StreamingRecognizeRequest)
 
     def _google_worker(self) -> None:
         """Auto-reconnect loop for Google Cloud bidi gRPC stream (~5 min limit)."""
         try:
+            from google.api_core.exceptions import Cancelled
             from google.cloud import speech
         except ImportError:
             self.get_logger().error(
@@ -430,13 +461,25 @@ class SttNode(Node):
         if self._config.model and self._config.model != 'default':
             rc['model'] = self._config.model
         recognition_config = speech.RecognitionConfig(**rc)
-        streaming_config = speech.StreamingRecognitionConfig(
+        stream_options = dict(
             config=recognition_config,
             interim_results=self._config.interim_results,
         )
+        if self._config.speech_end_timeout_s > 0:
+            from google.protobuf import duration_pb2
+            timeout_ns = round(self._config.speech_end_timeout_s * 1_000_000_000)
+            seconds, nanos = divmod(timeout_ns, 1_000_000_000)
+            stream_options.update(
+                enable_voice_activity_events=True,
+                voice_activity_timeout=speech.StreamingRecognitionConfig.VoiceActivityTimeout(
+                    speech_end_timeout=duration_pb2.Duration(seconds=seconds, nanos=nanos)),
+            )
+        streaming_config = speech.StreamingRecognitionConfig(**stream_options)
 
         reconnect_count = 0
         backoff = 1.0
+        event_type = speech.StreamingRecognizeResponse.SpeechEventType
+        end_events = (event_type.SPEECH_ACTIVITY_TIMEOUT, event_type.END_OF_SINGLE_UTTERANCE)
 
         while not self._stop_event.is_set():
             if reconnect_count > _MAX_RECONNECT:
@@ -445,23 +488,29 @@ class SttNode(Node):
                     f'max reconnect attempts ({_MAX_RECONNECT}) exhausted -> FAILED')
                 break
 
+            requests = None
+            end_reason = None
             try:
                 if reconnect_count == 0:
+                    self._state = STTState.CONNECTING
                     self.get_logger().info('Google streaming session started')
                 else:
                     self._state = STTState.RECONNECTING
                     self.get_logger().info(
                         f'Google reconnecting (attempt {reconnect_count}/{_MAX_RECONNECT})')
 
-                responses = client.streaming_recognize(
-                    config=streaming_config,
-                    requests=self._google_request_gen(),
-                )
+                requests = self._google_request_gen()
+                responses = client.streaming_recognize(config=streaming_config, requests=requests)
                 self._state = STTState.STREAMING
 
                 for response in responses:
                     if self._stop_event.is_set():
                         return
+                    if response.speech_event_type in end_events and end_reason is None:
+                        end_reason = event_type(response.speech_event_type).name
+                        requests.close()
+                        self._state = STTState.DRAINING
+                    # Do not break on an end event: final results may follow it.
                     for result in response.results:
                         if not result.alternatives:
                             continue
@@ -475,29 +524,43 @@ class SttNode(Node):
                                 confidence=confidence,
                             ))
 
-                # Stream ended normally (single_utterance or ~5 min rotation)
-                if not self._stop_event.is_set():
+            except Exception as exc:  # noqa: BLE001 - worker must never die
+                if requests is not None:
+                    requests.close()
+                if self._stop_event.is_set():
+                    break
+                if end_reason is not None and isinstance(exc, Cancelled):
+                    # Google may finish an endpointed RPC with CANCELLED/499.
+                    # Only accept this after an explicit server end event.
+                    pass
+                else:
+                    self._state = STTState.RECONNECTING
+                    self._drain_audio_queue()
+                    reconnect_count += 1
+                    self.get_logger().warning(
+                        f'Google stream error ({exc}) — retry {reconnect_count}/'
+                        f'{_MAX_RECONNECT} in {backoff:.1f}s')
+                    self._stop_event.wait(timeout=backoff)
+                    backoff = min(backoff * 2, 30.0)
+                    try:
+                        client = _new_client()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    continue
+            finally:
+                if requests is not None:
+                    requests.close()
+
+            if not self._stop_event.is_set():
+                if end_reason is None:
+                    # Keep the existing stale-audio policy for unannounced EOF.
                     dropped = self._drain_audio_queue()
                     self.get_logger().info(
                         f'Google stream ended, restarting (flushed {dropped} stale chunks)')
-                    reconnect_count = 0
-                    backoff = 1.0
-
-            except Exception as exc:  # noqa: BLE001 - worker must never die
-                if self._stop_event.is_set():
-                    break
-                self._drain_audio_queue()
-                reconnect_count += 1
-                self.get_logger().warning(
-                    f'Google stream error ({exc}) — retry {reconnect_count}/'
-                    f'{_MAX_RECONNECT} in {backoff:.1f}s')
-                self._stop_event.wait(timeout=backoff)
-                backoff = min(backoff * 2, 30.0)
-                # gRPC 채널 수준 에러면 client 재생성
-                try:
-                    client = _new_client()
-                except Exception:  # noqa: BLE001
-                    pass
+                # Audio arriving while an endpointed stream drains belongs to
+                # the next session; preserve it by skipping the flush above.
+                reconnect_count = 0
+                backoff = 1.0
 
         if self._state != STTState.FAILED:
             self._state = STTState.IDLE
