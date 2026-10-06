@@ -29,6 +29,8 @@ stt_node:
     input_gain_db: 0.0           # amplifying in a noisy room backfires
     echo_cancel_tail_ms: 200     # mute this long after SpeakerState.playing clears
     echo_cancel_lead_ms: 0       # pre-mute; needs a tts->stt onset signal, so off
+    mic_log_period_s: 5.0        # mic summary log (chunks, level, sent/muted/dropped, age); 0 = off
+    mic_stall_s: 1.0             # warn when no mic chunk arrives this long. Per-chunk: --log-level stt_node:=debug
 
 tts_node:
   ros__parameters:

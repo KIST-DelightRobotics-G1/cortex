@@ -52,7 +52,7 @@ from std_msgs.msg import String
 from g1_onboard_msgs.msg import SpeakerState
 from kist_msgs.msg import AudioChunk
 
-from .ext_sensor import chunk_to_mono_s16
+from .ext_sensor import MicMonitor, chunk_to_mono_s16, level_dbfs
 
 _MAX_RECONNECT = 10
 
@@ -194,6 +194,10 @@ class SttNode(Node):
         self.declare_parameter('input_gain_db', 0.0)
         self.declare_parameter('echo_cancel_tail_ms', 200)
         self.declare_parameter('echo_cancel_lead_ms', 0)
+        # Mic input log: a summary every mic_log_period_s (0 = off), a warning when no
+        # chunk arrives for mic_stall_s. Every chunk is logged at DEBUG.
+        self.declare_parameter('mic_log_period_s', 5.0)
+        self.declare_parameter('mic_stall_s', 1.0)
 
         g = self.get_parameter
         self._config = STTConfig(
@@ -233,6 +237,13 @@ class SttNode(Node):
         self.pub = self.create_publisher(String, g('transcript_topic').value, 10)
         self._mic_channel = int(g('mic_channel').value)
         self._format_warned = False
+        self._mic = MicMonitor(stall_s=float(g('mic_stall_s').value))
+        self._muted_prev = False                 # echo gate state of the previous chunk
+        self._mute_since: Optional[float] = None
+        mic_period = float(g('mic_log_period_s').value)
+        if mic_period > 0:
+            self.create_timer(mic_period, self._log_mic_summary, callback_group=grp)
+        self.create_timer(0.25, self._check_mic_stall, callback_group=grp)
         # ext-sensor-io publishes BestEffort; a reliable reader would never match it.
         self.create_subscription(
             AudioChunk, g('audio_topic').value, self._on_audio_msg, qos_profile_sensor_data,
@@ -312,21 +323,68 @@ class SttNode(Node):
         ch = self._mic_channel if self._mic_channel < msg.channels else 0
         pcm = chunk_to_mono_s16(msg.data, msg.channels, ch, msg.sample_rate,
                                 self._config.sample_rate_hz)
-        self._on_audio_chunk(pcm, time.monotonic())
+        now = time.monotonic()
+        # capture -> here, on the two hosts' wall clocks (meaningful only if they are synced)
+        age_ms = (time.time_ns() - msg.stamp_ns) / 1e6 if msg.stamp_ns > 0 else None
+        rms_db, peak_db = level_dbfs(pcm)
+        ev = self._mic.on_chunk(int(msg.seq), now, age_ms, rms_db, peak_db)
+        log = self.get_logger()
+        if ev['first']:
+            log.info(f'mic: first chunk seq={msg.seq} {msg.sample_rate} Hz x{msg.channels} '
+                     f'{msg.format} frame={msg.frame_id!r} -> ch{ch} @ {self._config.sample_rate_hz} Hz'
+                     + (f', capture age {age_ms:.0f} ms' if age_ms is not None else ''))
+        if ev['resumed_after_s'] is not None:
+            log.info(f'mic: chunks resumed after {ev["resumed_after_s"]:.1f} s (seq={msg.seq})')
+        if ev['gap']:
+            log.warning(f'mic: {ev["gap"]} chunk(s) missing before seq={msg.seq} (BestEffort loss)')
+        outcome = self._on_audio_chunk(pcm, now)
+        self._mic.on_outcome(outcome)
+        log.debug(f'mic rx seq={msg.seq} {len(pcm) // 2} samples rms {rms_db:.0f} dBFS '
+                  f'peak {peak_db:.0f} dBFS -> {outcome}'
+                  + (f' age {age_ms:.0f} ms' if age_ms is not None else '')
+                  + (f' q={self._audio_queue.qsize()}' if self._audio_queue is not None else ''))
+
+    def _log_mic_summary(self) -> None:
+        s = self._mic.summary(time.monotonic())
+        if not s['chunks']:
+            return                                       # the stall warning covers silence
+        q = self._audio_queue.qsize() if self._audio_queue is not None else 0
+        age = (f', capture age p50 {s["age_ms_p50"]:.0f} / max {s["age_ms_max"]:.0f} ms'
+               if s['age_ms_p50'] is not None else '')
+        self.get_logger().info(
+            f'mic: {s["chunks"]} chunks / {s["span_s"]:.1f} s ({s["rate"]:.1f}/s), '
+            f'level rms {s["rms_db"]:.0f} peak {s["peak_db"]:.0f} dBFS, '
+            f'sent {s["sent"]} muted {s["muted"]} dropped {s["dropped"]}, '
+            f'missing {s["gaps"]}, queue {q}{age}, stt={self._state.value}')
+
+    def _check_mic_stall(self) -> None:
+        if self._mic.check_stall(time.monotonic()):
+            self.get_logger().warning(
+                f'mic: no chunk for {self._mic.stall_s:.1f} s — is ext-sensor-io publishing?')
 
     # --- audio path (ported unchanged) ------------------------------------
-    def _on_audio_chunk(self, pcm: bytes, ts: float) -> None:
-        """Drop while echo-muted; forward to backend queue otherwise."""
+    def _on_audio_chunk(self, pcm: bytes, ts: float) -> str:
+        """Drop while echo-muted; forward to backend queue otherwise.
+        Returns what happened to the chunk: 'sent' | 'muted' | 'dropped'."""
         # Echo-cancel gate (speaker playing + tail-off + leading edge)
-        if self._check_echo_mute(ts):
+        muted = self._check_echo_mute(ts)
+        if muted != self._muted_prev:
+            self._muted_prev = muted
+            if muted:
+                self._mute_since = ts
+                self.get_logger().info('mic: echo mute ON (robot speaking)')
+            else:
+                held = ts - self._mute_since if self._mute_since is not None else 0.0
+                self.get_logger().info(f'mic: echo mute OFF after {held:.1f} s')
+        if muted:
             # Inject silence of identical length so Google's idle timeout does
             # not terminate the stream during long TTS playback.
             if self._audio_queue is not None:
                 try:
                     self._audio_queue.put_nowait(bytes(len(pcm)))
                 except queue.Full:
-                    pass
-            return
+                    return 'dropped'
+            return 'muted'
 
         # 3) Apply speech filter then feed to backend queue
         if self._audio_queue is not None:
@@ -335,7 +393,8 @@ class SttNode(Node):
                 filtered = self._speech_filter.process(samples, self._gain_linear)
                 self._audio_queue.put_nowait(filtered.tobytes())
             except queue.Full:
-                self.get_logger().debug('audio queue full, dropping chunk')
+                return 'dropped'
+        return 'sent'
 
     def _check_echo_mute(self, ts: float) -> bool:
         """True if the mic should be muted at audio timestamp ``ts``."""
