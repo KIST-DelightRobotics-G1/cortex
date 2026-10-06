@@ -134,8 +134,9 @@ CORTEX_GPUS=none docker/run.sh ros2 launch cortex_bringup llm_demo.launch.py bac
 
 - Credentials come from `.env` (`--env-file`, never baked in). Use
   `GOOGLE_APPLICATION_CREDENTIALS_B64`; a host file path does not exist in the container.
-- `--network host`, `ROS_DOMAIN_ID=0`, `DDS_PEER_IP` as in `env.sh`. The NIC name in
-  `config/cyclonedds.xml` (`eno2`) must still match the host.
+- `--network host`, `ROS_DOMAIN_ID=0`, `DDS_PEER_IP` / `DDS_ROBOT_IP` as in `env.sh`. The NIC
+  CycloneDDS binds to is `CORTEX_NIC` (default `eno2`, must match the host). Without the robot
+  attached `eno2` is DOWN and nothing starts — use `CORTEX_NIC=lo docker/run.sh …`.
 - The TTS cache lives on the host (`~/.cache/cortex_tts`) and survives rebuilds.
 - The image includes CUDA 12.6 PyTorch and Ultralytics. run.sh exposes GPUs and mounts
   `~/models/cortex` read-only at `/models/cortex`; weights stay external.

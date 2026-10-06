@@ -45,9 +45,11 @@ export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
 export DDS_PEER_IP=${DDS_PEER_IP:-192.168.123.164}
 # G1 internal PC (audio service for speaker_node). Verify on the robot.
 export DDS_ROBOT_IP=${DDS_ROBOT_IP:-192.168.123.161}
+# NIC CycloneDDS binds to (config/cyclonedds.xml). No robot attached: CORTEX_NIC=lo.
+export CORTEX_NIC=${CORTEX_NIC:-eno2}
 
 echo "[env.sh] Activated ROS ${ROS_DISTRO:-unknown} with ${RMW_IMPLEMENTATION}"
-echo "[env.sh]   ROS_DOMAIN_ID=${ROS_DOMAIN_ID}  DDS_PEER_IP=${DDS_PEER_IP}  DDS_ROBOT_IP=${DDS_ROBOT_IP}"
+echo "[env.sh]   ROS_DOMAIN_ID=${ROS_DOMAIN_ID}  DDS_PEER_IP=${DDS_PEER_IP}  DDS_ROBOT_IP=${DDS_ROBOT_IP}  CORTEX_NIC=${CORTEX_NIC}"
 echo "[env.sh]   CYCLONEDDS_URI=${CYCLONEDDS_URI}"
 
 unset _env_sh_dir _ros_distro _ros_setup _cyclonedds_xml _ws_setup
