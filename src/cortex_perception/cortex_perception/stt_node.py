@@ -242,8 +242,14 @@ class SttNode(Node):
             callback_group=grp)
 
         self._start_backend()
+        # model/endpointing are logged because they decide how long a final result
+        # takes: v1 'default' never endpoints on its own (final only at stream
+        # close), latest_short does. A stale installed YAML is otherwise invisible.
         self.get_logger().info(
             f"stt_node up (backend={self._config.backend.value}, "
+            f"model={self._config.model}, "
+            f"end_timeout={self._config.speech_end_timeout_s}s"
+            f"{'' if self._config.backend is STTBackend.GOOGLE_CLOUD_V2 else ' [v2 only]'}, "
             f"lang={self._config.language_code}, rate={self._config.sample_rate_hz}, "
             f"audio={g('audio_topic').value} -> {g('transcript_topic').value})")
 

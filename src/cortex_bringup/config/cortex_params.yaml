@@ -111,6 +111,7 @@ llm_node:
     request_topic: /cortex/llm/request   # must match orchestrator llm_* topics
     step_topic: /cortex/llm/step
     # actions_path: default = installed share/cortex_cognition/config/actions.yaml
+    # Per-run override without editing this file: cortex.launch.py llm_backend:=gemini
     backend: dummy                       # dummy | gemini | openai
     model: gemini-3.6-flash              # gemini: GOOGLE_API_KEY; openai: OPENAI_API_KEY (env)
     request_timeout_s: 20.0
