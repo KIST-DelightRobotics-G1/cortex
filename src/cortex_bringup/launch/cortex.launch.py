@@ -22,6 +22,9 @@ def _nodes(context):
     only = LaunchConfiguration('detector_only').perform(context).lower()
     if only not in ('true', 'false'):
         raise ValueError('detector_only must be true or false')
+    llm_backend = LaunchConfiguration('llm_backend').perform(context)
+    if llm_backend and llm_backend not in ('dummy', 'gemini', 'openai'):
+        raise ValueError('llm_backend must be dummy, gemini or openai')
     graph = [('cortex_perception', 'detector_node')]
     if only == 'false':
         graph += [('cortex_perception', 'stt_node'), ('cortex_cognition', 'llm_node'),
@@ -33,6 +36,8 @@ def _nodes(context):
         if executable == 'detector_node' and overrides:
             layers.append({key: ParameterValue(value, value_type=str)
                            for key, value in overrides.items()})
+        if executable == 'llm_node' and llm_backend:
+            layers.append({'backend': ParameterValue(llm_backend, value_type=str)})
         nodes.append(Node(package=package, executable=executable, name=executable,
                           output='screen', parameters=layers))
     return nodes
@@ -50,5 +55,8 @@ def generate_launch_description():
         DeclareLaunchArgument('device', default_value='',
                               description='Override YAML device, e.g. 0, cpu or mps'),
         DeclareLaunchArgument('detector_only', default_value='false'),
+        DeclareLaunchArgument('llm_backend', default_value='',
+                              description='Override llm_node.backend: dummy | gemini | openai; '
+                                          'empty keeps YAML value'),
         OpaqueFunction(function=_nodes),
     ])

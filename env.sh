@@ -35,6 +35,22 @@ if [[ -f "${_ws_setup}" ]]; then
   source "${_ws_setup}"
 fi
 
+# Credentials and host overrides. docker/run.sh hands .env to the container with
+# --env-file; this is the native equivalent, so both paths behave the same and
+# `ros2 launch` works without remembering to export anything. Sourced before the
+# DDS defaults below so a DDS_PEER_IP set in .env still wins; the ${VAR:-default}
+# form keeps an empty entry (as shipped in .env.example) from overriding one.
+if [[ -f "${_env_sh_dir}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${_env_sh_dir}/.env"
+  set +a
+  echo "[env.sh] loaded .env"
+else
+  echo "[env.sh] WARN: no .env — cp .env.example .env and fill it in, or" >&2
+  echo "[env.sh]       llm_node falls back to dummy and STT/TTS stay offline" >&2
+fi
+
 export CYCLONEDDS_URI="file://${_cyclonedds_xml}"
 export RMW_IMPLEMENTATION="rmw_cyclonedds_cpp"
 
