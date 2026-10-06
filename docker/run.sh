@@ -65,6 +65,7 @@ exec docker run -it --name "$CONTAINER" \
     -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" \
     -e DDS_PEER_IP="${DDS_PEER_IP:-192.168.123.164}" \
     -e DDS_ROBOT_IP="${DDS_ROBOT_IP:-192.168.123.161}" \
+    -e CORTEX_NIC="${CORTEX_NIC:-eno2}" \
     --mount "type=bind,src=$MODEL_DIR,dst=/models/cortex,readonly" \
     -v "${TTS_CACHE_DIR}":/root/.cache/cortex_tts \
     "$IMAGE" "${CMD[@]}"

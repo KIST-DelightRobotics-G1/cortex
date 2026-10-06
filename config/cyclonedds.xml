@@ -15,14 +15,15 @@
     0/40 samples either way, 39/40 once multicast is on. The peers below are an
     extra, for hosts on the robot LAN that multicast may not reach.
 
-    TODO(REQ-XX): confirm the PC NIC name below on the demo machine
-    (`ip -br link`). It is host-specific and NOT portable.
+    NIC: CORTEX_NIC (default eno2, the PC NIC facing the robot LAN — host-specific,
+    check with `ip -br link`). Without the robot attached eno2 is DOWN and CycloneDDS
+    refuses it, so run with CORTEX_NIC=lo (docker/run.sh passes it through).
   -->
   <Domain Id="0">
     <General>
       <Interfaces>
-        <!-- PC NIC facing the robot LAN. Change to match the demo machine. -->
-        <NetworkInterface name="eno2" priority="default" multicast="default"/>
+        <!-- PC NIC facing the robot LAN; set CORTEX_NIC to match the host. -->
+        <NetworkInterface name="${CORTEX_NIC:-eno2}" priority="default" multicast="default"/>
         <!-- No "lo" here: with a second interface Cyclone also sends discovery to
              DDS_PEER_IP from a 127.0.0.1-bound socket, which the kernel refuses
              (ddsi_udp_conn_write ... retcode -3, ~20 lines per node per cycle).

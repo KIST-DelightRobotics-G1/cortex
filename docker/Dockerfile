@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-colcon-common-extensions \
     python3-pip \
     libgl1 libglib2.0-0 \
+    nano vim \
     && rm -rf /var/lib/apt/lists/*
 
 # ─── python deps ──────────────────────────────────────────────────────────────
