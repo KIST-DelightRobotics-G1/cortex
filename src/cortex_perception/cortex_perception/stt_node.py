@@ -21,8 +21,8 @@ Backends (parameter ``backend``):
                      ``location`` (global | asia-northeast3 | us-central1 …);
                      ``speech_end_timeout_s`` > 0 ends the stream after that much
                      silence following speech, which forces the final result out
-                     early (the worker reopens the stream at once; queued audio is
-                     not lost). This is the knob v1 does not have.
+                     early. v1 also supports this timeout; both backends reopen
+                     the stream after completion.
     dummy            text-as-PCM for offline runs.
 
 One module by convention (see task_srv_provider.py: no pytest infra, so the
@@ -154,8 +154,8 @@ class STTConfig:
     model: str = 'default'
     # v2 only: regional endpoint (chirp_3 is not served from every region).
     location: str = 'global'
-    # v2 only: 0 = server default endpointing. >0 = close the stream this many
-    # seconds after speech stops (final result is flushed at that moment).
+    # v1/v2: 0 leaves the server timeout unset. >0 requests stream closure
+    # after this much audio without speech following a speech-end event.
     speech_end_timeout_s: float = 0.0
     # Speech band IIR filter (HPF + LPF).
     highpass_hz: float = 120.0   # Hz — removes low-freq vibration / DC
@@ -248,8 +248,7 @@ class SttNode(Node):
         self.get_logger().info(
             f"stt_node up (backend={self._config.backend.value}, "
             f"model={self._config.model}, "
-            f"end_timeout={self._config.speech_end_timeout_s}s"
-            f"{'' if self._config.backend is STTBackend.GOOGLE_CLOUD_V2 else ' [v2 only]'}, "
+            f"end_timeout={self._config.speech_end_timeout_s}s, "
             f"lang={self._config.language_code}, rate={self._config.sample_rate_hz}, "
             f"audio={g('audio_topic').value} -> {g('transcript_topic').value})")
 
@@ -430,10 +429,20 @@ class SttNode(Node):
         if self._config.model and self._config.model != 'default':
             rc['model'] = self._config.model
         recognition_config = speech.RecognitionConfig(**rc)
-        streaming_config = speech.StreamingRecognitionConfig(
+        stream_options = dict(
             config=recognition_config,
             interim_results=self._config.interim_results,
         )
+        if self._config.speech_end_timeout_s > 0:
+            from google.protobuf import duration_pb2
+            timeout_ns = round(self._config.speech_end_timeout_s * 1_000_000_000)
+            seconds, nanos = divmod(timeout_ns, 1_000_000_000)
+            stream_options.update(
+                enable_voice_activity_events=True,
+                voice_activity_timeout=speech.StreamingRecognitionConfig.VoiceActivityTimeout(
+                    speech_end_timeout=duration_pb2.Duration(seconds=seconds, nanos=nanos)),
+            )
+        streaming_config = speech.StreamingRecognitionConfig(**stream_options)
 
         reconnect_count = 0
         backoff = 1.0
