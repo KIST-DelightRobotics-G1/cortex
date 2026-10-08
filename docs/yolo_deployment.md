@@ -119,3 +119,6 @@ accuracy, H.264 transport on the robot, or GPU execution.
 Known main-derived limitations remain: initial/old IDLE freshness is not fully
 validated and module source stamps are not used for stale checking. Those changes
 are outside this deployment update; see the handoff notes before robot operation.
+
+For field failure diagnosis on RTX 4090 / Ubuntu / ROS 2 Humble, see
+[yolo_diagnostics.md](yolo_diagnostics.md) for opt-in logs, passive recording and standalone video analysis.

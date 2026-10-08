@@ -1,0 +1,6 @@
+# Standalone video tools only. On Linux GPU install requirements-torch-cu126.txt first.
+-r requirements-detector.txt
+numpy==1.26.4
+PyYAML>=6
+# Also used by the optional ROS bag video exporter (ROS itself comes from Humble).
+av>=12
