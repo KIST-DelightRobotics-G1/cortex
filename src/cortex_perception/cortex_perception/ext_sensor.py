@@ -47,10 +47,12 @@ class H264Decoder:
 
     def __init__(self) -> None:
         self._ctx = None
+        self.last_status = 'waiting_keyframe'
 
     def decode(self, data, keyframe: bool, stamp_ns: int | None = None):
         """Feed one frame's NAL units; returns the newest av.VideoFrame or None."""
         if self._ctx is None and not keyframe:
+            self.last_status = 'waiting_keyframe'
             return None
         import av                                   # lazy: only camera consumers need PyAV
         if self._ctx is None:
@@ -64,7 +66,9 @@ class H264Decoder:
             frames = self._ctx.decode(packet)
         except Exception:                           # corrupt / out-of-order: resync on next keyframe
             self._ctx = None
+            self.last_status = 'decode_error'
             return None
+        self.last_status = 'decoded' if frames else 'buffering'
         return frames[-1] if frames else None
 
 

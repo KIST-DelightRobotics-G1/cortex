@@ -1,0 +1,10 @@
+# Diagnostic output only: preserves the effective site model and decision policy.
+detector_node:
+  ros__parameters:
+    diagnostics_enabled: true
+    diagnostics_period_s: 1.0
+    diagnostics_topic: /cortex/detector/diagnostics
+orchestrator_node:
+  ros__parameters:
+    detector_diagnostics_enabled: true
+    detector_diagnostics_topic: /cortex/precheck/diagnostics

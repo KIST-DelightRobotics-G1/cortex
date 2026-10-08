@@ -22,8 +22,11 @@ def test_generated_message_adapter_preserves_source_time_and_raw_stride(monkeypa
     monkeypatch.setattr(detector_node, 'YoloDetector', Backend)
     rclpy.init()
     node = detector_node.DetectorNode(parameter_overrides=[Parameter('backend', value='yolo'),
-                                                          Parameter('camera_transport', value='raw')])
+                                                          Parameter('camera_transport', value='raw'),
+                                                          Parameter('diagnostics_enabled', value=True)])
     try:
+        captured = []
+        node._diag.publish = captured.append
         stamps = []
         for _ in range(3):
             msg = Image(height=1, width=2, encoding='rgb8', step=8,
@@ -36,6 +39,10 @@ def test_generated_message_adapter_preserves_source_time_and_raw_stride(monkeypa
             time.sleep(.003)
         res = node._on_check(CheckTarget.Request(target='cucumber'), CheckTarget.Response())
         assert res.found and res.label == 'cucumber'
+        import json
+        evidence = json.loads(captured[-1])
+        assert evidence['reason'] == 'allowed' and evidence['hits'] == 3
+        assert evidence['target'] == 'cucumber'
         assert (res.stamp.sec, res.stamp.nanosec) in stamps
         assert node._model.last_frame.tolist() == [[[3, 2, 1], [6, 5, 4]]]
         unsupported = node._on_check(CheckTarget.Request(target='user'), CheckTarget.Response())
@@ -55,6 +62,7 @@ def test_h264_callback_uses_decoded_pts_not_packet_stamp():
     accepted = []
     fake = SimpleNamespace(
         _decoder=SimpleNamespace(decode=lambda *args: frame),
+        _diag=SimpleNamespace(record=lambda *args, **kwargs: None),
         _accept_frame_data=lambda *args: accepted.append(args))
     msg = SimpleNamespace(data=b'', is_keyframe=False, stamp_ns=200, frame_id='head')
     detector_node.DetectorNode._on_h264(fake, msg)

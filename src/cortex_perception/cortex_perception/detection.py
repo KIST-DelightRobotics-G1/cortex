@@ -116,26 +116,34 @@ class PresenceWindow:
             self._last_stamp, self._ever_frame, self._fault = stamp_ns, True, ''
             return True
 
-    def check(self, target, now, min_confidence=0., max_age_s=0.):
+    def check(self, target, now, min_confidence=0., max_age_s=0., diagnostics=None):
+        # Optional evidence is captured under the same lock as the verdict.
+        # Diagnostic reasons never enter CheckTarget.detail (which has fail-open semantics).
+        def finish(verdict, reason=None, **evidence):
+            if diagnostics is not None:
+                diagnostics.update(found=verdict.found, detail=verdict.detail,
+                                   reason=reason or verdict.detail or 'allowed', **evidence)
+            return verdict
+
+        if diagnostics is not None:
+            diagnostics.clear()
         labels = self.targets.get(target)
         if labels is None:
-            return Verdict(detail='unknown_target')
+            return finish(Verdict(detail='unknown_target'))
         if not (math.isfinite(min_confidence) and 0 <= min_confidence <= 1 and
                 math.isfinite(max_age_s) and max_age_s >= 0):
-            return Verdict(detail='invalid_request')
+            return finish(Verdict(detail='invalid_request'))
         with self._lock:
             if self._fault:
-                return Verdict(detail=self._fault)
+                return finish(Verdict(detail=self._fault))
             labels = labels & self.names
             if not labels:
-                return Verdict(detail='unsupported_class')
+                return finish(Verdict(detail='unsupported_class'))
             self._prune(now)
             age = min(max_age_s or self.window_s, self.window_s)
             frames = [r for r in self._frames if 0 <= now-r[0] <= age]
             if not frames:
-                return Verdict(detail='stale' if self._ever_frame else 'no_frame')
-            if len(frames) < self.min_frames:
-                return Verdict(detail='insufficient_frames', samples=len(frames))
+                return finish(Verdict(detail='stale' if self._ever_frame else 'no_frame'))
             conf = min_confidence or self.min_confidence
             hits = []
             for _, stamp, best in frames:
@@ -143,10 +151,25 @@ class PresenceWindow:
                 if ds:
                     hits.append((max(ds, key=lambda d: d.confidence), stamp))
             latest_hit = bool(hits) and hits[-1][1] == frames[-1][1]
+            if diagnostics is not None:
+                scores = [d.confidence for _, _, best in frames
+                          for label, d in best.items() if label in labels]
+                last_hit_t = next((t for t, stamp, _ in reversed(frames)
+                                   if hits and stamp == hits[-1][1]), None)
+                diagnostics.update(samples=len(frames), hits=len(hits), latest_hit=latest_hit,
+                                   min_frames=self.min_frames, confidence_threshold=conf,
+                                   window_s=age, require_latest_hit=self.require_latest_hit,
+                                   latest_frame_age_ms=(now-frames[-1][0])*1000,
+                                   last_hit_age_ms=(now-last_hit_t)*1000 if last_hit_t is not None else None,
+                                   max_candidate_confidence=max(scores) if scores else None)
+            if len(frames) < self.min_frames:
+                return finish(Verdict(detail='insufficient_frames', samples=len(frames)))
             if len(hits)*2 <= len(frames) or (self.require_latest_hit and not latest_hit):
-                return Verdict(samples=len(frames), hits=len(hits))
+                reason = ('no_hits' if not hits else 'below_majority'
+                          if len(hits)*2 <= len(frames) else 'latest_miss')
+                return finish(Verdict(samples=len(frames), hits=len(hits)), reason)
             d, stamp = max(hits, key=lambda item: item[0].confidence)
-            return Verdict(True, detection=d, stamp_ns=stamp, samples=len(frames), hits=len(hits))
+            return finish(Verdict(True, detection=d, stamp_ns=stamp, samples=len(frames), hits=len(hits)))
 
 
 class YoloDetector:

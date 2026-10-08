@@ -28,6 +28,7 @@ that trade-off is accepted for simplicity.
 """
 
 import glob
+import json
 import os
 import time
 from abc import ABC, abstractmethod
@@ -278,6 +279,8 @@ class OrchestratorNode(Node):
         self.declare_parameter('trace_topic', '/cortex/trace')
         self.declare_parameter('detector_service', '/cortex/detector/check')
         self.declare_parameter('detector_call_timeout_s', 0.3)
+        self.declare_parameter('detector_diagnostics_enabled', False)
+        self.declare_parameter('detector_diagnostics_topic', '/cortex/precheck/diagnostics')
         self.declare_parameter('stop_keywords', ['그만', '멈춰', '정지', '스톱'])
         self.declare_parameter('accept_timeout_s', 0.5)
         self.declare_parameter('stale_s', 1.0)
@@ -387,6 +390,10 @@ class OrchestratorNode(Node):
         self.det_client = self.create_client(CheckTarget, g('detector_service').value,
                                              callback_group=self._det_grp)
         self._det_timeout = float(g('detector_call_timeout_s').value)
+        self._det_diag_pub = (self.create_publisher(
+            String, g('detector_diagnostics_topic').value,
+            QoSProfile(depth=100, reliability=ReliabilityPolicy.BEST_EFFORT))
+            if g('detector_diagnostics_enabled').value else None)
 
         prm = ex.Params(
             accept_timeout_s=float(g('accept_timeout_s').value),
@@ -547,22 +554,37 @@ class OrchestratorNode(Node):
         """Synchronous detector query -> (found, detail). A non-empty detail with
         found=False means 'no verdict' (service missing / timeout / stale frame),
         handled according to detector_fail_open and the bounded precheck policy."""
+        started = time.monotonic()
+
+        def finish(found, detail):
+            if self._det_diag_pub is not None:
+                try:
+                    self._det_diag_pub.publish(String(data=json.dumps(dict(
+                        schema=1, event='service_result', target=target,
+                        plan_id=self._exec.plan_id, index=self._exec.cur,
+                        start_monotonic_s=started, ros_time_ns=self.get_clock().now().nanoseconds,
+                        elapsed_ms=(time.monotonic()-started)*1000,
+                        found=found, detail=detail))))
+                except Exception as error:
+                    self.get_logger().warning(f'detector diagnostic output failed: {error}')
+            return found, detail
+
         if not self.det_client.service_is_ready():
-            return False, 'no_detector'
+            return finish(False, 'no_detector')
         fut = self.det_client.call_async(CheckTarget.Request(target=target))
         deadline = time.monotonic() + self._det_timeout
         while not fut.done() and time.monotonic() < deadline:
             time.sleep(0.005)
         if not fut.done():
             fut.cancel()
-            return False, 'detector_timeout'
+            return finish(False, 'detector_timeout')
         try:
             r = fut.result()
         except Exception:
-            return False, 'detector_error'
+            return finish(False, 'detector_error')
         if r is None:
-            return False, 'detector_error'
-        return bool(r.found), (f'{r.label} {r.confidence:.2f}' if r.found else r.detail)
+            return finish(False, 'detector_error')
+        return finish(bool(r.found), f'{r.label} {r.confidence:.2f}' if r.found else r.detail)
 
     def _trace(self, kind: int, plan_id: str, index: int, title: str, body: str) -> None:
         msg = TraceEvent(plan_id=plan_id, kind=int(kind), index=int(index), title=title, body=body)
