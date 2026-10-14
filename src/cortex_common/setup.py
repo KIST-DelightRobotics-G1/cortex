@@ -15,7 +15,12 @@ setup(
     zip_safe=True,
     maintainer='박성용',
     maintainer_email='park50260@gmail.com',
-    description='Helpers shared by cortex nodes (opt-in console events).',
+    description='Helpers shared by cortex nodes (opt-in events) and the session recorder.',
     license='Apache-2.0',
     tests_require=['pytest'],
+    entry_points={
+        'console_scripts': [
+            'session_recorder_node = cortex_common.session_recorder_node:main',
+        ],
+    },
 )

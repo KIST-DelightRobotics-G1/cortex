@@ -8,7 +8,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
-from cortex_bringup.runtime_config import detector_overrides, node_logging
+from cortex_bringup.runtime_config import detector_overrides, node_logging, session_log
 
 
 def _nodes(context):
@@ -44,6 +44,14 @@ def _nodes(context):
                        'record_events': ParameterValue(record, value_type=str)})
         nodes.append(Node(package=package, executable=executable, name=executable,
                           output='screen', parameters=layers,
+                          arguments=['--ros-args', '--log-level', level]))
+    recorder = session_log(logging_file) if only == 'false' else None
+    if recorder is not None:                    # logging.yaml session_log.enabled
+        if 'dir' in recorder:
+            recorder['dir'] = ParameterValue(recorder['dir'], value_type=str)
+        level, _, _ = node_logging(logging_file, 'session_recorder_node')
+        nodes.append(Node(package='cortex_common', executable='session_recorder_node',
+                          name='session_recorder_node', output='screen', parameters=[recorder],
                           arguments=['--ros-args', '--log-level', level]))
     return nodes
 

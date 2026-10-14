@@ -26,7 +26,8 @@ def context(tmp_path, only='false', llm_backend=''):
 def test_standard_launch_builds_full_graph_and_detector_only(tmp_path):
     main = runpy.run_path(str(LAUNCH/'cortex.launch.py'))
     full = main['_nodes'](context(tmp_path))
-    assert len(full) == 7 and all(isinstance(n, Node) for n in full)
+    assert len(full) == 8 and all(isinstance(n, Node) for n in full)
+    assert full[-1].node_executable == 'session_recorder_node'   # logging.yaml session_log
     assert len(main['_nodes'](context(tmp_path, 'true'))) == 1
 
 
@@ -49,7 +50,7 @@ def test_llm_backend_override_is_accepted_and_validated(tmp_path):
     main = runpy.run_path(str(LAUNCH/'cortex.launch.py'))
     for backend in ('', 'dummy', 'gemini', 'openai'):
         nodes = main['_nodes'](context(tmp_path, llm_backend=backend))
-        assert len(nodes) == 7, backend
+        assert len(nodes) == 8, backend
     with pytest.raises(ValueError):
         main['_nodes'](context(tmp_path, llm_backend='bogus'))
 

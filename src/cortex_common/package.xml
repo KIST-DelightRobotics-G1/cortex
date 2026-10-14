@@ -4,12 +4,14 @@
   <name>cortex_common</name>
   <version>0.0.1</version>
   <description>
-    Small helpers shared by every cortex node. Today: EventLog, the opt-in console
-    and recorded events chosen per node in cortex_bringup/config/logging.yaml.
+    Small helpers shared by every cortex node: EventLog, the opt-in console and
+    recorded events chosen per node in cortex_bringup/config/logging.yaml, and
+    session_recorder_node, which files /cortex/events into one JSONL per voice command.
   </description>
   <maintainer email="park50260@gmail.com">박성용</maintainer>
   <license>Apache-2.0</license>
 
+  <exec_depend>rclpy</exec_depend>
   <exec_depend>std_msgs</exec_depend>  <!-- String on /cortex/events -->
 
   <test_depend>python3-pytest</test_depend>

@@ -25,9 +25,21 @@
 #                      prefetch  TTS_PREFETCH
 #   speaker_node       playback  SPEAKER_BARGE_IN
 #   gui_bridge_node    client    GUI_CLIENT
+#
+# session_log: session_recorder_node writes one JSONL per voice command from /cortex/events
+#   (so it sees what "record" publishes) plus a per-day sessions.csv index. Docker: docker/run.sh
+#   mounts the host's CORTEX_LOG_DIR (default ~/cortex_logs) at the container's ~/cortex_logs.
 
 level: info
 record: all
+
+session_log:
+  enabled: true
+  dir: ~/cortex_logs     # <dir>/YYYY-MM-DD/{sessions.csv, HHMMSS_<plan_id>.jsonl}
+  keep_days: 14          # day folders older than this are deleted
+  pre_roll_s: 5.0        # events from just before the utterance (transcript, STT state)
+  post_roll_s: 2.0       # events right after SESSION_END (last TTS line)
+  end_timeout_s: 120.0   # close a session that never got its SESSION_END
 
 nodes:
   orchestrator_node: {events: [session, plan, precheck, subtask]}
