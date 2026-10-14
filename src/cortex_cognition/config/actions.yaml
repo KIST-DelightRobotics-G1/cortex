@@ -57,7 +57,8 @@ precheck:
   close: object
   pick: object
   handover: person
-  take_out: [container, object]
+  take_out: object               # 오이만. [container, object] 면 냉장고도 보여야 하는데, 팔이 닿는 거리에서는
+                                 # 냉장고가 인식될지 확인 전이다 (pick 과 같은 조건으로 맞춤)
   put_in: container
   receive: person
   insert: target
