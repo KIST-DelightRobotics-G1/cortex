@@ -80,7 +80,8 @@ def test_v3_take_out_and_gate_uses_real_presence_window(labels, latest, expected
     ports = ex.Ports(now=lambda: now[0], send_cmd=lambda *a: commands.append(a),
         send_cancel=lambda *a: None, check_target=check, say=lambda *a: None,
         stop_speech=lambda: None, trace=lambda *a: None, status=lambda *a: None)
-    machine = ex.Executor(CFG, ports, ex.Params(detector_fail_open=False,
+    and_gate = {**CFG, 'precheck': {**CFG['precheck'], 'take_out': ['container', 'object']}}
+    machine = ex.Executor(and_gate, ports, ex.Params(detector_fail_open=False,
         precheck_timeout_s=1.0, precheck_retry_s=.1))
     for i in range(3):
         now[0] = i*.125

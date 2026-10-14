@@ -122,7 +122,9 @@ def test_stream_lines_splits_across_chunks():
 
 
 
-def test_multi_precheck_resolves_slots_and_preserves_single_target_config():
+def test_multi_precheck_resolves_slots_and_preserves_single_target_config(monkeypatch):
+    assert planner.precheck_targets(CFG, 'take_out', ['cucumber', 'fridge']) == ['cucumber']   # shipped
+    monkeypatch.setitem(CFG['precheck'], 'take_out', ['container', 'object'])
     assert planner.precheck_targets(CFG, 'take_out', ['cucumber', 'fridge']) == ['fridge', 'cucumber']
     assert planner.precheck_targets(CFG, 'open', ['fridge_door']) == ['fridge_door']
     assert planner.precheck_targets(CFG, 'put_in', ['cucumber', 'fridge']) == ['fridge']
@@ -142,6 +144,7 @@ def test_invalid_precheck_config_is_rejected_at_load(tmp_path, slots):
         planner.load_config(str(path))
 
 
-def test_missing_argument_cannot_silently_remove_a_required_target():
+def test_missing_argument_cannot_silently_remove_a_required_target(monkeypatch):
+    monkeypatch.setitem(CFG['precheck'], 'take_out', ['container', 'object'])
     with pytest.raises(ValueError, match='missing precheck argument'):
         planner.precheck_targets(CFG, 'take_out', ['cucumber'])

@@ -5,6 +5,8 @@ Scenarios follow Subtask_state_interface_spec v0.1 (06절 sequences).
 """
 import os
 
+import pytest
+
 from cortex_cognition import executor as ex
 from cortex_cognition import planner
 
@@ -406,6 +408,22 @@ def test_graceful_finish_is_cancelled_after_the_step_timeout():
 
 
 # Bounded object-presence prechecks [SYS-REQ-44]. No module dispatch until verified.
+@pytest.fixture(autouse=True)
+def _take_out_and_gate(request, monkeypatch):
+    """The shipped actions.yaml checks only the object for take_out. The AND gate (every listed
+    target must be visible) is still a supported config, so the take_out tests run it on the
+    previous [container, object] list."""
+    if request.node.name.startswith('test_take_out'):
+        monkeypatch.setitem(CFG['precheck'], 'take_out', ['container', 'object'])
+
+
+def test_shipped_take_out_checks_only_the_object():
+    h = waiting_harness(lambda t: (t == 'cucumber', ''))
+    h.x.heard('p1', '오이')
+    h.plan('p1', [('take_out', ['cucumber', 'fridge'])])
+    assert h.cmds and h.cmds[0][2] == 'take_out'
+
+
 def waiting_harness(detector=None):
     return Harness(detector or (lambda t: (False, '')),
                    ex.Params(detector_fail_open=False, precheck_timeout_s=1.0, precheck_retry_s=.1))
