@@ -116,20 +116,3 @@ def test_disabled_statistics_retain_no_pipeline_data():
     assert result['counters'] == {}
     assert result['latest_frame_age_ms'] is None and 'infer_ms' not in result
 
-
-def test_detailed_frame_evidence_matches_actual_threshold_and_wire_result():
-    window = make_window()
-    for i, confidence in enumerate([.8, .2, .9]):
-        window.add([DetectionRecord('cucumber', confidence, .5, .5, .2, .1)],
-                   i*.125, 100+i, i*.125)
-    plain = window.check('cucumber', .25)
-    diagnostic, frames = {}, []
-    observed = window.check('cucumber', .25, diagnostics=diagnostic, frame_evidence=frames)
-    assert observed == plain and observed.found
-    assert [r['source_stamp_ns'] for r in frames] == [100, 101, 102]
-    assert [r['hit'] for r in frames] == [True, False, True]
-    assert [r['age_ms'] for r in frames] == [250., 125., 0.]
-    assert sum(r['hit'] for r in frames) == diagnostic['hits']
-    stale_frames = []
-    assert window.check('cucumber', 1., frame_evidence=stale_frames).detail == 'stale'
-    assert stale_frames == []

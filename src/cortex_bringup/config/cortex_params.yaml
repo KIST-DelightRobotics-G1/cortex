@@ -132,10 +132,6 @@ detector_node:
     device: '0'                          # NVIDIA GPU; use cpu or mps explicitly on other hosts
     rate_hz: 8.0
     diagnostics_log_period_s: 2.0       # YOLO_STATUS period; console events are chosen in logging.yaml
-    diagnostics_jsonl_enabled: false    # optional detailed file records; console setting is independent
-    diagnostics_jsonl_dir: ''           # empty: ROS log directory / yolo_diagnostics / unique run
-    diagnostics_jsonl_max_bytes: 10485760  # 10 MiB per file
-    diagnostics_jsonl_backup_count: 4   # current + 4 backups, at most 50 MiB per run
     window_s: 0.6                        # CheckTarget answers by majority over this window
     default_min_confidence: 0.25
     min_frames: 3
