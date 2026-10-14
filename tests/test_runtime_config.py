@@ -56,3 +56,28 @@ def test_incomplete_site_yaml_cannot_fall_back_to_implicit_stub(tmp_path):
     cfg = write_config(tmp_path/'incomplete.yaml', device='cpu')
     with pytest.raises(ValueError, match='explicitly select'):
         detector_overrides(cfg)
+
+
+def test_node_logging_reads_level_and_events(tmp_path):
+    from cortex_bringup.runtime_config import node_logging
+    spec = tmp_path/'logging.yaml'
+    spec.write_text('level: warn\nnodes:\n  stt_node: {level: debug, events: [transcript, session]}\n'
+                    '  llm_node: {events: request}\n')
+    assert node_logging(str(spec), 'stt_node') == ('debug', 'transcript,session')
+    assert node_logging(str(spec), 'llm_node') == ('warn', 'request')
+    assert node_logging(str(spec), 'tts_node') == ('warn', '')
+    assert node_logging('', 'tts_node') == ('info', '')
+    spec.write_text('level: loud\n')
+    with pytest.raises(ValueError):
+        node_logging(str(spec), 'stt_node')
+    with pytest.raises(ValueError):
+        node_logging(str(tmp_path/'missing.yaml'), 'stt_node')
+
+
+def test_shipped_logging_yaml_defaults():
+    from cortex_bringup.runtime_config import node_logging
+    shipped = Path(__file__).resolve().parents[1]/'src/cortex_bringup/config/logging.yaml'
+    assert node_logging(str(shipped), 'orchestrator_node') == ('info', 'plan,precheck,subtask')
+    assert node_logging(str(shipped), 'detector_node') == ('info', 'config,status,check')
+    assert node_logging(str(shipped), 'stt_node') == ('info', 'transcript')
+    assert node_logging(str(shipped), 'llm_node') == ('info', '')

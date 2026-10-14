@@ -84,7 +84,6 @@ orchestrator_node:
     trace_topic: /cortex/trace          # thought flow for the display (gui_bridge_node)
     detector_service: /cortex/detector/check
     detector_call_timeout_s: 0.3
-    diagnostics_log_enabled: true       # console: plan, precheck result and dispatched subtask
     stop_keywords: ['그만', '멈춰', '정지', '스톱']
     # Judgment parameters (Subtask_state_interface_spec v0.1, 08절)
     accept_timeout_s: 0.5               # Cmd -> RUNNING; +1 resend
@@ -131,8 +130,7 @@ detector_node:
     model_sha256: "3d275b84378da06dc9202b4d40962f49f8d88d18062357d1d167abab10d6f920"
     device: '0'                          # NVIDIA GPU; use cpu or mps explicitly on other hosts
     rate_hz: 8.0
-    diagnostics_log_enabled: true       # console only; no bag/video recording
-    diagnostics_log_period_s: 2.0       # periodic input/inference summary; CheckTarget logs each query
+    diagnostics_log_period_s: 2.0       # YOLO_STATUS period; console events are chosen in logging.yaml
     diagnostics_jsonl_enabled: false    # optional detailed file records; console setting is independent
     diagnostics_jsonl_dir: ''           # empty: ROS log directory / yolo_diagnostics / unique run
     diagnostics_jsonl_max_bytes: 10485760  # 10 MiB per file

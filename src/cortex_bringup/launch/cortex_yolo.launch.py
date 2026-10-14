@@ -21,6 +21,7 @@ def _include(context):
             'model': LaunchConfiguration('model').perform(context),
             'device': LaunchConfiguration('device').perform(context),
             'detector_only': LaunchConfiguration('detector_only').perform(context),
+            'logging_file': LaunchConfiguration('logging_file').perform(context),
         }.items())]
 
 
@@ -32,5 +33,6 @@ def generate_launch_description():
         DeclareLaunchArgument('profile', default_value='fridge_detector_v3.yaml'),
         DeclareLaunchArgument('device', default_value=''),
         DeclareLaunchArgument('detector_only', default_value='false'),
+        DeclareLaunchArgument('logging_file', default_value=str(share/'config/logging.yaml')),
         OpaqueFunction(function=_include),
     ])

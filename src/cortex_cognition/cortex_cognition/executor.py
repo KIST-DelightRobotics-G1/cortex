@@ -83,7 +83,7 @@ class Ports:
     stop_speech: Callable[[], None]
     trace: Callable[[int, str, int, str, str], None]      # (kind, plan_id, index, title, body)
     status: Callable[[int, str, str, int, int, str], None]  # (state, task, subtask, idx, count, detail)
-    log: Callable[[str], None] = lambda s: None
+    log: Callable[..., None] = lambda topic, event, **fields: None   # console event (EventLog)
 
 
 @dataclass
@@ -204,7 +204,7 @@ class Executor:
             # reply(chat/none) 로 끝난 계획은 그 자리에서 IDLE 이 되므로, 뒤따라 오는 END 줄은
             # 늘 여기로 온다. 정상이라 굳이 남기지 않는다.
             if kind != KIND_END:
-                self.p.log(f'ignore step for stale plan {plan_id}')
+                self.p.log('plan', 'PLAN_IGNORED', plan_id=plan_id, reason='stale plan')
             return
         if kind == KIND_REPLY:
             self.p.trace(T_REPLY, plan_id, -1, say, reply_kind)
@@ -279,7 +279,8 @@ class Executor:
                          ins.title, f'rewrite:{ins.rule}')
                 steps[s.index] = s
                 added.append(s)
-                self.p.log(f'rewrite {ins.rule}: {ins.action}{ins.args} before {step.action}{step.args}')
+                self.p.log('plan', 'REWRITE', rule=ins.rule, action=ins.action, args=ins.args,
+                           before=step.action, before_args=step.args)
                 step.index += 1
                 offset += 1
         steps[step.index] = step
@@ -435,8 +436,8 @@ class Executor:
             if m.status == RUNNING and m.plan_id:
                 self.p.send_cancel(st.exec, m.plan_id, m.index)
                 self.p.trace(T_CANCEL, m.plan_id, m.index, '이전 동작 취소', 'module busy')
-            self.p.log(f'{st.exec} is {STATUS_NAME.get(m.status, m.status)} — waiting for IDLE '
-                       f'before step {index}')
+            self.p.log('subtask', 'WAIT_IDLE', executor=st.exec,
+                       status=STATUS_NAME.get(m.status, m.status), index=index)
             return
         self._start_precheck(index)
 

@@ -1,6 +1,6 @@
 """Exercise the actual console/service adapter with generated Humble messages."""
 import json
-from types import MethodType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,16 +8,18 @@ pytest.importorskip('rclpy', reason='requires ROS 2 Humble and colcon-built inte
 from builtin_interfaces.msg import Time
 from cortex_cognition import executor as ex
 from cortex_cognition.orchestrator_node import OrchestratorNode
+from cortex_common.events import EventLog
 
 
 def context(enabled=True):
     logs = []
     node = SimpleNamespace(
-        _diagnostics_log_enabled=enabled, _det_timeout=0.,
+        _det_timeout=0.,
         _exec=SimpleNamespace(plan_id='p-test', cur=2, steps={2: SimpleNamespace(action='pick')}),
-        get_logger=lambda: SimpleNamespace(info=logs.append),
+        get_logger=lambda: SimpleNamespace(info=logs.append, warning=logs.append),
         get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(to_msg=lambda: Time(sec=1))))
-    node._diagnostic_log = MethodType(OrchestratorNode._diagnostic_log, node)
+    node.events = EventLog(node, known=('plan', 'precheck'),
+                           topics='plan,precheck' if enabled else '')
     return node, logs
 
 

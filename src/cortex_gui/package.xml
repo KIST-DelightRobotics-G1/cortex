@@ -16,6 +16,7 @@
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
+  <exec_depend>cortex_common</exec_depend>  <!-- EventLog -->
   <depend>sensor_msgs</depend>
   <depend>cortex_msgs</depend>
   <depend>kist_msgs</depend>

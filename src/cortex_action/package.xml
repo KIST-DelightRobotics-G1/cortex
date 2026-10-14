@@ -17,6 +17,7 @@
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
+  <exec_depend>cortex_common</exec_depend>  <!-- EventLog -->
   <depend>std_msgs</depend>
   <depend>g1_onboard_msgs</depend>
   <depend>cortex_msgs</depend>  <!-- ActionCmd (in) -->

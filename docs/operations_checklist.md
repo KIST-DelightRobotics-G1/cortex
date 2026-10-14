@@ -178,10 +178,10 @@ data: 냉장고에서 오이 가져와
 ---
 ```
 
-터미널 1에도 같이 찍힌다:
+터미널 1에도 같이 찍힌다 (`logging.yaml` 기본값에서 켜져 있음):
 
 ```
-[stt_node] transcript: '냉장고에서 오이 가져와' (final=True, conf=0.87)
+[stt_node] STT_TRANSCRIPT {"text": "냉장고에서 오이 가져와", "final": true, "conf": 0.87}
 ```
 
 | 증상 | 확인할 것 |
@@ -205,12 +205,20 @@ data: 냉장고에서 오이 가져와
 ros2 topic pub --once /cortex/stt/transcript std_msgs/msg/String "{data: '냉장고에서 오이 가져와'}"
 ```
 
+§3 로그는 기본으로 꺼져 있다. `src/cortex_bringup/config/logging.yaml` 에서 아래 두 줄의
+주석을 풀고 다시 띄운다 (Docker 는 이미지 재빌드 또는 `logging_file:=` 지정):
+
+```yaml
+  llm_node:        {events: [request, line, timing]}
+  tts_node:        {events: [say, prefetch]}
+```
+
 터미널 1에서 이 순서로 보여야 한다:
 
 ```
-[orchestrator_node] ... (요청 접수)
-[tts_node] say '네.': cache hit, first publish +3 ms          ← 접수 응답(ack)
-[llm_node] plan p-...-0001: '냉장고에서 오이 가져와' (mode=idle, ...)
+[tts_node] TTS_SAY {"text": "네.", "cache": "hit", "first_publish_ms": 3}          ← 접수 응답(ack)
+[llm_node] LLM_REQUEST {"plan_id": "p-...-0001", "utterance": "냉장고에서 오이 가져와", "mode": "idle", ...}
+[orchestrator_node] PLAN_STEP {"plan_id": "p-...-0001", "index": 0, ...}
 ```
 
 ### 3-2. 계획이 나오는가
@@ -246,14 +254,14 @@ ros2 topic pub --once /cortex/tts/say cortex_msgs/msg/ActionCmd "{text: '테스�
 터미널 1:
 
 ```
-[tts_node] published 20480 bytes in 1 chunk(s)
-[tts_node] say '테스트입니다': cache miss, first publish +498 ms
+[tts_node] TTS_PUBLISHED {"bytes": 20480, "chunks": 1}
+[tts_node] TTS_SAY {"text": "테스트입니다", "cache": "miss", "first_publish_ms": 498}
 ```
 
 | 로그 | 뜻 |
 |---|---|
-| `cache hit, +3 ms` | 전에 합성해 둔 문장 (정상, 가장 빠름) |
-| `cache miss, +400~1400 ms` | CLOVA에 새로 요청함 (정상) |
+| `"cache": "hit"`, 수 ms | 전에 합성해 둔 문장 (정상, 가장 빠름) |
+| `"cache": "miss"`, 400~1400 ms | CLOVA에 새로 요청함 (정상) |
 | `no credentials — dropping` | CLOVA 키 없음 |
 | 아무 로그 없음 | `say_topic` 이름 불일치 |
 

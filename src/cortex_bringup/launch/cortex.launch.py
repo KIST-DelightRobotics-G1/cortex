@@ -8,11 +8,12 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
-from cortex_bringup.runtime_config import detector_overrides
+from cortex_bringup.runtime_config import detector_overrides, node_logging
 
 
 def _nodes(context):
     params = str(Path(LaunchConfiguration('params_file').perform(context)).expanduser())
+    logging_file = LaunchConfiguration('logging_file').perform(context)
     profile = LaunchConfiguration('detector_profile').perform(context)
     if profile:
         profile = str(Path(profile).expanduser())
@@ -38,8 +39,11 @@ def _nodes(context):
                            for key, value in overrides.items()})
         if executable == 'llm_node' and llm_backend:
             layers.append({'backend': ParameterValue(llm_backend, value_type=str)})
+        level, events = node_logging(logging_file, executable)
+        layers.append({'log_events': ParameterValue(events, value_type=str)})
         nodes.append(Node(package=package, executable=executable, name=executable,
-                          output='screen', parameters=layers))
+                          output='screen', parameters=layers,
+                          arguments=['--ros-args', '--log-level', level]))
     return nodes
 
 
@@ -50,6 +54,8 @@ def generate_launch_description():
                               description='Full ROS parameter YAML (site configuration)'),
         DeclareLaunchArgument('detector_profile', default_value='',
                               description='Optional parameter YAML overlay, absolute path'),
+        DeclareLaunchArgument('logging_file', default_value=str(share/'config/logging.yaml'),
+                              description='Per-node log level and console events'),
         DeclareLaunchArgument('model', default_value='',
                               description='Override detector_node.model; empty keeps YAML value'),
         DeclareLaunchArgument('device', default_value='',

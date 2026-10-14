@@ -28,6 +28,7 @@ from ament_index_python.packages import get_package_share_directory
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 
+from cortex_common.events import EventLog
 from cortex_msgs.msg import PlanRequest, PlanStep
 
 from . import planner
@@ -49,6 +50,9 @@ class LlmNode(Node):
         self.declare_parameter('dummy_line_delay_s', 0.15)  # mimics streaming cadence
 
         g = self.get_parameter
+        # Console events (logging.yaml): request = LLM_REQUEST, line = LLM_LINE_SKIPPED/BLOCKED,
+        # timing = LLM_DONE.
+        self.events = EventLog(self, known=('request', 'line', 'timing'))
         self.cfg = planner.load_config(g('actions_path').value)
         self.backend = g('backend').value
         self.model = g('model').value
@@ -113,13 +117,15 @@ class LlmNode(Node):
                 ok, reason = planner.feasibility(ln, self.cfg)
                 if reason == 'skip_nearby':
                     # 문·서랍처럼 장소가 아닌 대상에 붙은 move_to — 이 줄만 버리고 계획은 잇는다.
-                    self.get_logger().info(f'skip {ln.action}({", ".join(ln.args)}): not a place')
+                    self.events('line', 'LLM_LINE_SKIPPED', plan_id=req.plan_id, action=ln.action,
+                                args=list(ln.args), reason='not a place')
                     return
                 if not ok:
                     # 할 수 없는 일이다. 계획을 여기서 끊고 사유를 오케스트레이터에 넘긴다.
                     # detail 형식 "<phrases 키>|<대상>" — 오케스트레이터가 한국어 안내로 바꾼다.
                     target = ln.args[0] if ln.args else ''
-                    self.get_logger().info(f'block {ln.action}({", ".join(ln.args)}): {reason}')
+                    self.events('line', 'LLM_LINE_BLOCKED', plan_id=req.plan_id, action=ln.action,
+                                args=list(ln.args), reason=reason)
                     self.step_pub.publish(PlanStep(plan_id=req.plan_id, kind=PlanStep.KIND_ERROR,
                                                    detail=f'{reason}|{target}'))
                     stopped = True
@@ -148,8 +154,8 @@ class LlmNode(Node):
 
         at = req.at or 'home'
         holding = req.holding or 'none'
-        self.get_logger().info(
-            f'plan {req.plan_id}: {req.utterance!r} (mode={req.state}, at={at}, holding={holding})')
+        self.events('request', 'LLM_REQUEST', plan_id=req.plan_id, utterance=req.utterance,
+                    mode=req.state, at=at, holding=holding)
         if self.backend == 'dummy':
             try:
                 self._dummy(req, on_line, should_stop)
@@ -163,7 +169,7 @@ class LlmNode(Node):
                                          req.state, on_line, should_stop, at=at, holding=holding,
                                          timeout_s=self.timeout_s,
                                          first_line_timeout_s=self.first_line_timeout_s)
-                self.get_logger().info(f'plan {req.plan_id}: stream done in {dt:.2f}s')
+                self.events('timing', 'LLM_DONE', plan_id=req.plan_id, stream_s=round(dt, 2))
                 return
             except Exception as e:
                 if should_stop() or emitted or attempt >= self.retries:
