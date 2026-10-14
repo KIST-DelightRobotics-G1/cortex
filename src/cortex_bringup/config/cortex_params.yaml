@@ -84,6 +84,7 @@ orchestrator_node:
     trace_topic: /cortex/trace          # thought flow for the display (gui_bridge_node)
     detector_service: /cortex/detector/check
     detector_call_timeout_s: 0.3
+    diagnostics_log_enabled: true       # console: plan, precheck result and dispatched subtask
     stop_keywords: ['그만', '멈춰', '정지', '스톱']
     # Judgment parameters (Subtask_state_interface_spec v0.1, 08절)
     accept_timeout_s: 0.5               # Cmd -> RUNNING; +1 resend
@@ -130,6 +131,8 @@ detector_node:
     model_sha256: "3d275b84378da06dc9202b4d40962f49f8d88d18062357d1d167abab10d6f920"
     device: '0'                          # NVIDIA GPU; use cpu or mps explicitly on other hosts
     rate_hz: 8.0
+    diagnostics_log_enabled: true       # console only; no bag/video recording
+    diagnostics_log_period_s: 2.0       # periodic input/inference summary; CheckTarget logs each query
     window_s: 0.6                        # CheckTarget answers by majority over this window
     default_min_confidence: 0.25
     min_frames: 3
