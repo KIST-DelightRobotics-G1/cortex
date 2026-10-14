@@ -291,6 +291,7 @@ class OrchestratorNode(Node):
         self.declare_parameter('safe_stop_vla_s', 10.0)
         self.declare_parameter('plan_timeout_s', 20.0)
         self.declare_parameter('detector_fail_open', True)
+        self.declare_parameter('say_on_done', True)      # speak actions.yaml done_say when a step finishes
         self.declare_parameter('precheck_timeout_s', 0.0)
         self.declare_parameter('precheck_retry_s', 0.1)
         self.declare_parameter('tts_prefetch_topic', '/cortex/tts/prefetch')
@@ -402,6 +403,7 @@ class OrchestratorNode(Node):
                                  'vla': float(g('safe_stop_vla_s').value)},
             plan_timeout_s=float(g('plan_timeout_s').value),
             detector_fail_open=bool(g('detector_fail_open').value),
+            say_on_done=bool(g('say_on_done').value),
             precheck_timeout_s=float(g('precheck_timeout_s').value),
             precheck_retry_s=float(g('precheck_retry_s').value),
         )
@@ -483,6 +485,10 @@ class OrchestratorNode(Node):
     def _on_plan_step(self, m: PlanStep) -> None:
         if m.kind == PlanStep.KIND_SUB and m.index > 0 and m.say:
             self.prefetch_pub.publish(ActionCmd(text=m.say))   # ready before the step starts
+        if m.kind == PlanStep.KIND_SUB and m.say and self._exec.prm.say_on_done:
+            done = planner.done_say(self.cfg, m.action, list(m.args))
+            if done:
+                self.prefetch_pub.publish(ActionCmd(text=done))  # ready before the step ends
         self._exec.on_step(m.plan_id, m.kind, m.index, m.action, list(m.args), m.say,
                            m.reply_kind, m.detail)
 

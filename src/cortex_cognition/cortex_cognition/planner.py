@@ -298,6 +298,18 @@ def phrase(cfg: dict, key: str, target_key: str = '') -> str:
     return fill(cfg, cfg.get('phrases', {}).get(key, ''), target_key)
 
 
+def done_say(cfg: dict, action: str, args: list) -> str:
+    """What to say when a step finishes well (actions.yaml done_say).
+
+    'action(first arg)' wins over 'action', then '_default'. '' means stay silent."""
+    table = cfg.get('done_say') or {}
+    first = args[0] if args else ''
+    for key in (f'{action}({first})', action, '_default'):
+        if key in table:
+            return fill(cfg, table[key] or '', first)
+    return ''
+
+
 # ---------------------------------------------------------------------------
 # Line validation
 # ---------------------------------------------------------------------------

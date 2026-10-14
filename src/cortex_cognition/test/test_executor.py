@@ -838,3 +838,57 @@ def test_take_out_training_sentence_survives_ready_and_precheck_gates(tmp_path):
     h.detector = lambda t: (True, '')
     h.advance(.2)
     assert sent == [(sentence, 'p1')]
+
+
+# --- CR2: speak when a step finishes well -------------------------------------------------
+
+def test_done_say_templates_and_particles():
+    assert planner.done_say(CFG, 'move_to', ['fridge']) == '냉장고에 도착했습니다.'
+    assert planner.done_say(CFG, 'move_to', ['user']) == '도착했습니다.'          # action(arg) wins
+    assert planner.done_say(CFG, 'open', ['fridge_door']) == '냉장고 문을 열었습니다.'
+    assert planner.done_say(CFG, 'pick', ['cucumber']) == '오이를 집었습니다.'
+    assert planner.done_say(CFG, 'handover', ['cucumber', 'user']) == '오이를 건네드렸습니다.'
+    assert planner.done_say(CFG, 'pour', ['kettle', 'cup']) == '마쳤습니다.'      # _default
+
+
+def test_each_finished_step_speaks_and_the_last_says_plan_done():
+    h = Harness(params=ex.Params(say_on_done=True))
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER[:2])                     # move_to(fridge), open(fridge_door)
+    run_step(h, 'nav', 'p1', 0)
+    assert '냉장고에 도착했습니다.' in h.says
+    run_step(h, 'vla', 'p1', 1)
+    assert h.says[-1] == planner.phrase(CFG, 'plan_done') == '모두 마쳤습니다.'
+    assert '냉장고 문을 열었습니다.' not in h.says     # replaced by plan_done on the last step
+
+
+def test_done_say_comes_before_the_next_steps_start_say():
+    h = Harness(params=ex.Params(say_on_done=True))
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER[:2])
+    run_step(h, 'nav', 'p1', 0)
+    i = h.says.index('냉장고에 도착했습니다.')
+    assert h.says[i + 1] == 'open say'             # next step's start line follows
+
+
+def test_silent_steps_stay_silent_and_off_means_off():
+    h = Harness(params=ex.Params(say_on_done=True))
+    h.x.heard('p1', 'x')
+    h.x.on_step('p1', SUB, 0, 'move_to', ['fridge'], '', '', '')   # a step with no start say
+    h.x.on_step('p1', END, 1, '', [], '', '', '')
+    run_step(h, 'nav', 'p1', 0)
+    assert h.says == []
+    h = Harness()                                  # Params default: say_on_done False
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER[:1])
+    run_step(h, 'nav', 'p1', 0)
+    assert '냉장고에 도착했습니다.' not in h.says and '모두 마쳤습니다.' not in h.says
+
+
+def test_failed_step_does_not_say_done():
+    h = Harness(params=ex.Params(say_on_done=True))
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER[:1])
+    h.state('nav', ex.RUNNING, 'p1', 0)
+    h.state('nav', ex.FAILED, 'p1', 0, 'no path')
+    assert '냉장고에 도착했습니다.' not in h.says and '모두 마쳤습니다.' not in h.says

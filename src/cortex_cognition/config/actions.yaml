@@ -80,6 +80,25 @@ phrases:
   plan_error:         "죄송합니다. 잘 이해하지 못했습니다."
   stopped:            "멈춥니다."
   stop_failed:        "멈추지 못했습니다. 로봇을 확인해 주세요."
+  plan_done:          "모두 마쳤습니다."           # 마지막 단계가 끝났을 때 (단계 완료 문장 대신)
+
+# 단계가 무사히 끝났을 때(DONE) 말할 문장. {ko} = 첫 인자의 한국어 이름, {eul} 을/를 {i} 이/가.
+# 키는 동작, 또는 동작(첫 인자) — 이쪽이 우선 (예: move_to(user)). "" 이면 말하지 않는다.
+# 시작할 때 말하지 않는 단계(시연 보정 approach · step_back)는 끝날 때도 말하지 않는다.
+done_say:
+  move_to:        "{ko}에 도착했습니다."
+  move_to(user):  "도착했습니다."
+  open:           "{ko}{eul} 열었습니다."
+  close:          "{ko}{eul} 닫았습니다."
+  pick:           "{ko}{eul} 집었습니다."
+  place:          "{ko}{eul} 놓았습니다."
+  handover:       "{ko}{eul} 건네드렸습니다."
+  take_out:       "{ko}{eul} 꺼냈습니다."
+  put_in:         "{ko}{eul} 넣었습니다."
+  turn_on:        "{ko}{eul} 켰습니다."
+  turn_off:       "{ko}{eul} 껐습니다."
+  wipe:           "{ko}{eul} 닦았습니다."
+  _default:       "마쳤습니다."
 
 # few-shot: 동사·물건·상황이 서로 다르고 테스트 발화와 겹치지 않는 7개
 examples:
