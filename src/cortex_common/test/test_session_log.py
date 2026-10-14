@@ -18,8 +18,8 @@ def lines(path):
     return [json.loads(l)['event'] for l in path.read_text(encoding='utf-8').splitlines()]
 
 
-def rows(log):
-    with open(log.dir / 'sessions.csv', encoding='utf-8') as f:
+def rows(log, day='2026-10-15'):
+    with open(log.dir / day / 'sessions.csv', encoding='utf-8') as f:
         return list(csv.DictReader(f))
 
 
@@ -33,16 +33,17 @@ def test_one_file_per_session_with_pre_and_post_roll(tmp_path):
                detail='', duration_s=3.0, steps=6))
     log.add(ev(4, 'tts_node', 'TTS_SAY', text='모두 마쳤습니다.'))     # within the post-roll
     log.tick(T0 + 4 * S)
-    assert not (log.dir / 'sessions.csv').exists()                   # still in post-roll
+    assert not (log.dir / '2026-10-15' / 'sessions.csv').exists()    # still in post-roll
     log.add(ev(6, 'tts_node', 'TTS_SAY', text='later'))               # after the post-roll
     log.tick(T0 + 6 * S)
-    files = list((tmp_path / '2026-10-15').iterdir())
-    assert [f.name for f in files] == ['142233_p-1.jsonl']
-    assert lines(files[0]) == ['STT_TRANSCRIPT', 'SESSION_START', 'YOLO_CHECK', 'SESSION_END', 'TTS_SAY']
+    day = tmp_path / '2026-10-15'
+    assert sorted(f.name for f in day.iterdir()) == ['142233_p-1.jsonl', 'sessions.csv']
+    assert lines(day / '142233_p-1.jsonl') == \
+        ['STT_TRANSCRIPT', 'SESSION_START', 'YOLO_CHECK', 'SESSION_END', 'TTS_SAY']
     (row,) = rows(log)
     assert row['plan_id'] == 'p-1' and row['utterance'] == '오이 가져와'
     assert row['outcome'] == 'succeeded' and row['steps'] == '6' and row['events'] == '5'
-    assert row['file'].replace('\\', '/') == '2026-10-15/142233_p-1.jsonl'
+    assert row['file'] == '142233_p-1.jsonl'
 
 
 def test_overlapping_sessions_keep_their_own_plan_events(tmp_path):
@@ -75,14 +76,14 @@ def test_garbage_lines_are_ignored(tmp_path):
     log = SessionLog(tmp_path)
     log.add('not json')
     log.add('{"event": "SESSION_START"}')
-    assert not log._open and not (tmp_path / 'sessions.csv').exists()
+    assert not log._open and list(tmp_path.iterdir()) == []
 
 
-def test_prune_removes_only_old_date_folders(tmp_path):
+def test_prune_removes_old_date_folders_with_their_index(tmp_path):
     log = SessionLog(tmp_path, keep_days=14)
     for name in ('2026-09-30', '2026-10-01', '2026-10-02', 'notes', '2026-13-99'):
         (tmp_path / name).mkdir()
-    (tmp_path / 'sessions.csv').write_text('x')
+        (tmp_path / name / 'sessions.csv').write_text('x')
     assert log.prune(datetime.date(2026, 10, 15)) == ['2026-09-30']
     assert sorted(p.name for p in tmp_path.iterdir()) == \
-        ['2026-10-01', '2026-10-02', '2026-13-99', 'notes', 'sessions.csv']
+        ['2026-10-01', '2026-10-02', '2026-13-99', 'notes']

@@ -7,17 +7,19 @@
 
 ```
 ~/cortex_logs/
-  sessions.csv                                  세션 한 줄씩: 시각, 발화, 결과, 소요 시간, 단계 수, 파일
   2026-10-15/
-    160404_p-1792015432-0001.jsonl              이벤트 한 줄씩 (JSON)
+    sessions.csv                                그날 세션 한 줄씩: 시각, 발화, 결과, 소요 시간, 단계 수, 파일
+    160404_p-1792015432-0001.jsonl              세션 하나의 이벤트 한 줄씩 (JSON)
     160413_p-1792015432-0002.jsonl
 ```
+
+세션은 시작한 날짜 폴더에 들어간다 (자정을 넘겨 끝나도).
 
 - Docker: `docker/run.sh` 가 호스트의 `CORTEX_LOG_DIR` (기본 `~/cortex_logs`) 를 컨테이너의
   `/root/cortex_logs` 에 마운트한다. 컨테이너를 지워도 남는다. 파일 소유자는 root 다.
   이 마운트가 없는 예전 컨테이너는 재사용하지 않고 멈춘다 (다시 만들라는 안내가 나온다).
 - 시각은 호스트 시간대 기준이다 (`/etc/localtime` 공유).
-- 14일(`keep_days`)보다 오래된 날짜 폴더는 recorder 가 지운다. `sessions.csv` 는 지우지 않는다.
+- 14일(`keep_days`)보다 오래된 날짜 폴더는 그 안의 `sessions.csv` 까지 통째로 recorder 가 지운다.
 
 ## 세션 하나에 들어가는 것
 
@@ -43,7 +45,11 @@
 ## 보기
 
 ```bash
-column -s, -t < ~/cortex_logs/sessions.csv | tail
+column -s, -t < ~/cortex_logs/2026-10-15/sessions.csv          # 하루
+```
+
+```bash
+grep -h failed ~/cortex_logs/*/sessions.csv                     # 남아 있는 전체 기간
 ```
 
 ```bash

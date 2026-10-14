@@ -6,10 +6,11 @@ session's plan_id go to that session only; events without one (stt, tts, detecto
 go to every open session. pre_roll_s of earlier events are copied in at the start
 (STT stream state, the transcript that triggered it).
 
+    <dir>/2026-10-15/sessions.csv                     one row per finished session of that day
     <dir>/2026-10-15/142233_p-1792012895-0001.jsonl   one event per line, as published
-    <dir>/sessions.csv                                one row per finished session
 
-Date folders older than keep_days are deleted (only folders named YYYY-MM-DD).
+A session belongs to the day it started. Date folders older than keep_days are deleted
+whole, index included (only folders named YYYY-MM-DD).
 """
 import collections
 import csv
@@ -113,7 +114,7 @@ class SessionLog:
         s = self._open.pop(plan_id)
         s.file.close()
         end = s.end or {}
-        index = self.dir / 'sessions.csv'
+        index = s.path.parent / 'sessions.csv'          # the session's day folder
         new = not index.exists()
         with open(index, 'a', encoding='utf-8', newline='') as f:
             w = csv.DictWriter(f, CSV_FIELDS)
@@ -123,7 +124,7 @@ class SessionLog:
                         'plan_id': plan_id, 'utterance': s.utterance,
                         'outcome': end.get('outcome', ''), 'detail': end.get('detail', ''),
                         'duration_s': end.get('duration_s', ''), 'steps': end.get('steps', ''),
-                        'events': s.count, 'file': str(s.path.relative_to(self.dir))})
+                        'events': s.count, 'file': s.path.name})
 
     def prune(self, today: datetime.date) -> list:
         """Delete YYYY-MM-DD folders older than keep_days. Returns the deleted names."""
