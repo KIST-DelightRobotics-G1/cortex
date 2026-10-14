@@ -271,9 +271,11 @@ class Executor:
         step.index += offset
         added = []
         prev = steps.get(step.index - 1)
-        if prev is not None and self.rw is not None:
-            for ins in self.rw.between(prev.action, prev.args, step.action, step.args):
-                s = Step(step.index, ins.action, ins.args, '', ins.exec, ins.instruction,
+        if self.rw is not None:
+            # prev is None for the first line — auto_open can still apply (take_out(x, fridge))
+            for ins in self.rw.between(prev.action if prev else None, prev.args if prev else None,
+                                       step.action, step.args):
+                s = Step(step.index, ins.action, ins.args, ins.say, ins.exec, ins.instruction,
                          ins.title, f'rewrite:{ins.rule}')
                 steps[s.index] = s
                 added.append(s)

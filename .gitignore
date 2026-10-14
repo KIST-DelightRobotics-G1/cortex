@@ -219,3 +219,6 @@ __marimo__/
 build/
 install/
 log/
+
+# scripts/plan_regression.py results
+out/

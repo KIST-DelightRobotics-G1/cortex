@@ -81,7 +81,7 @@ phrases:
   stopped:            "멈춥니다."
   stop_failed:        "멈추지 못했습니다. 로봇을 확인해 주세요."
 
-# few-shot: 동사·물건·상황이 서로 다르고 테스트 발화와 겹치지 않는 6개
+# few-shot: 동사·물건·상황이 서로 다르고 테스트 발화와 겹치지 않는 7개
 examples:
   - utterance: "책상에 있는 리모컨 좀 가져다줘"
     lines:
@@ -95,6 +95,15 @@ examples:
       - {i: 1, a: open,    args: [cupboard_door],       say: "찬장 문을 엽니다."}
       - {i: 2, a: put_in,  args: [cup, cupboard],       say: "컵을 찬장에 넣습니다."}
       - {i: 3, a: close,   args: [cupboard_door],       say: "찬장 문을 닫습니다."}
+  # 닫힌 곳에서 꺼낼 때: 사용자가 열라고 하지 않아도 꺼내기 전에 연다
+  - utterance: "찬장에서 그릇 하나 가져다줘"
+    lines:
+      - {i: 0, a: move_to,  args: [cupboard],           say: "찬장으로 갑니다."}
+      - {i: 1, a: open,     args: [cupboard_door],      say: "찬장 문을 엽니다."}
+      - {i: 2, a: take_out, args: [bowl, cupboard],     say: "그릇을 꺼냅니다."}
+      - {i: 3, a: close,    args: [cupboard_door],      say: "찬장 문을 닫습니다."}
+      - {i: 4, a: move_to,  args: [user],               say: "사용자에게 갑니다."}
+      - {i: 5, a: handover, args: [bowl, user],         say: "그릇을 건네드립니다."}
   - utterance: "선풍기 켜줘"
     lines:
       - {i: 0, a: turn_on, args: [fan], say: "선풍기를 켭니다."}
