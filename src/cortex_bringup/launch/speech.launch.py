@@ -20,9 +20,10 @@ def generate_launch_description() -> LaunchDescription:
     params = os.path.join(config, 'cortex_params.yaml')
 
     def node(pkg, exe):
-        level, events = node_logging(os.path.join(config, 'logging.yaml'), exe)
+        level, events, record = node_logging(os.path.join(config, 'logging.yaml'), exe)
         return Node(package=pkg, executable=exe, name=exe, output='screen',
-                    parameters=[params, {'log_events': ParameterValue(events, value_type=str)}],
+                    parameters=[params, {'log_events': ParameterValue(events, value_type=str),
+                                         'record_events': ParameterValue(record, value_type=str)}],
                     arguments=['--ros-args', '--log-level', level])
 
     return LaunchDescription([

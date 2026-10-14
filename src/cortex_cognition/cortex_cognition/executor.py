@@ -121,6 +121,7 @@ class Executor:
                 or not math.isfinite(self.prm.precheck_retry_s) or self.prm.precheck_retry_s <= 0):
             raise ValueError('invalid precheck retry settings')
         self.mod = {'nav': ModuleView(), 'vla': ModuleView()}
+        self._sessions: dict[str, tuple] = {}   # plan_id → (utterance, start time); survives _reset
         self._reset()
 
     # ------------------------------------------------------------------ state
@@ -163,15 +164,33 @@ class Executor:
         self.p.status(state, self.utterance, st.title if st else '', max(self.cur, 0),
                       self.count if self.count >= 0 else len(self.steps), detail)
 
+    # One voice command = one session, keyed by its plan_id: SESSION_START when the
+    # utterance is heard, SESSION_END once with how it ended. Sessions may overlap
+    # (a chat reply while a plan runs); the recorder files each one separately.
+    _STOP_OUTCOME = (('preempted', 'preempted'), ('user', 'stopped'), ('plan_error', 'plan_error'))
+
+    def _end(self, plan_id: str, outcome: str, detail: str = '') -> None:
+        opened = self._sessions.pop(plan_id, None)
+        if opened is None:
+            return
+        utterance, t0 = opened
+        active = plan_id == self.plan_id
+        self.p.log('session', 'SESSION_END', plan_id=plan_id, utterance=utterance,
+                   outcome=outcome, detail=detail, duration_s=round(self.p.now() - t0, 2),
+                   steps=len(self.steps) if active else 0, last_step=self.cur if active else -1)
+
     # --------------------------------------------------------------- inputs
     def heard(self, plan_id: str, utterance: str) -> str:
         """A final transcript arrived and the node is about to send a PlanRequest.
         Returns the state string to put in the request."""
         state = self.state_for_llm
+        self._sessions[plan_id] = (utterance, self.p.now())
+        self.p.log('session', 'SESSION_START', plan_id=plan_id, utterance=utterance, state=state)
         self.p.trace(T_HEARD, plan_id, -1, utterance, '')
         self.p.trace(T_THINKING, plan_id, -1, '생각하는 중', state)
         if self.phase == 'PLANNING':                     # latest wins: forget the unanswered one
             self.p.trace(T_CANCEL, self.plan_id, -1, '새 발화로 대체', '')
+            self._end(self.plan_id, 'replaced')
             self.phase = 'IDLE'
         if self.phase in ('IDLE', 'CONFIRM'):
             self.phase = 'PLANNING'
@@ -182,6 +201,8 @@ class Executor:
             self.steps = {}
         else:
             # running: keep going; the LLM's answer decides (new plan → preempt, chat → say)
+            if self._pending:
+                self._end(self._pending['plan_id'], 'replaced')
             self._pending = {'plan_id': plan_id, 'utterance': utterance, 'steps': {}, 'count': -1,
                              'offset': 0, 'speculative': True}
         return state
@@ -210,6 +231,7 @@ class Executor:
         if kind == KIND_REPLY:
             self.p.trace(T_REPLY, plan_id, -1, say, reply_kind)
             self.p.say(say)
+            self._end(plan_id, 'confirm' if reply_kind == 'confirm' else 'reply', reply_kind)
             if target == 'pending':                      # chat while running → nothing else changes
                 self._pending = None
                 return
@@ -224,10 +246,12 @@ class Executor:
             say_text = self._error_say(detail)
             self.p.trace(T_NOTE, plan_id, -1, say_text, detail)
             if target == 'pending':
+                self._end(plan_id, 'plan_error', detail)
                 self._pending = None
                 return
             if self.phase == 'PLANNING':                 # nothing started yet
                 self.p.say(say_text)
+                self._end(plan_id, 'plan_error', detail)
                 self._reset()
                 self._status(S_FAILED, detail)
             else:                                        # mid-plan: finish current step, then stop
@@ -335,6 +359,8 @@ class Executor:
     def stop(self, reason: str = 'user') -> None:
         """User said stop. Cancels whatever is running; pending plan is dropped."""
         self.p.stop_speech()
+        if self._pending:
+            self._end(self._pending['plan_id'], 'stopped', reason)
         self._pending = None
         if self.phase == 'IDLE':
             return
@@ -347,6 +373,7 @@ class Executor:
             return
         if self.phase in ('PLANNING', 'CONFIRM'):
             self.p.trace(T_CANCEL, self.plan_id, -1, '중단', reason)
+            self._end(self.plan_id, 'stopped', reason)
             self._reset()
             self._status(S_PREEMPTED, reason)
             return
@@ -360,6 +387,7 @@ class Executor:
             if now - self._t > self.prm.plan_timeout_s:
                 self.p.say(planner.phrase(self.cfg, 'plan_error'))
                 self.p.trace(T_CANCEL, self.plan_id, -1, '계획 응답 없음', '')
+                self._end(self.plan_id, 'plan_timeout')
                 self._reset()
                 self._status(S_FAILED, 'plan timeout')
             return
@@ -532,6 +560,7 @@ class Executor:
             self._dispatch(nxt)
         elif self.count >= 0 and nxt >= self.count:
             self.p.trace(T_PLAN_DONE, self.plan_id, -1, '완료', '')
+            self._end(self.plan_id, 'succeeded')
             self._status(S_SUCCEEDED)
             # 실행 중에 들어온 다음 발화가 대기하고 있으면 이어서 시작한다. _reset() 이
             # _pending 을 지우므로 _finish_stop() 에 넘겨 승격시킨다 — 그렇게 하지 않으면
@@ -557,6 +586,7 @@ class Executor:
     def _abandon(self, reason: str) -> None:
         self.p.trace(T_CANCEL, self.plan_id, -1, '계획 중단', reason)
         self._status(S_FAILED, reason)
+        self._end(self.plan_id, 'failed', reason)
         self._reset()
         self._status(S_IDLE)
 
@@ -577,6 +607,8 @@ class Executor:
     def _begin_stop(self, reason: str, keep_pending: bool = False, cancel: bool = True,
                     state: int = S_PREEMPTED, trace: bool = True) -> None:
         if not keep_pending:
+            if self._pending:
+                self._end(self._pending['plan_id'], 'dropped', reason)
             self._pending = None
         st = self._cur()
         self._stop_reason = reason
@@ -611,6 +643,12 @@ class Executor:
     def _finish_stop(self, module_ok: bool = True) -> None:
         pending = self._pending
         self._pending = None
+        if not module_ok:
+            self._end(self.plan_id, 'failed', 'module did not stop')
+        else:
+            outcome = next((o for key, o in self._STOP_OUTCOME
+                            if self._stop_reason.startswith(key)), 'failed')
+            self._end(self.plan_id, outcome, self._stop_reason)
         self._reset()
         if not module_ok:
             # rule 2: the module may still be moving — start nothing new on top of it

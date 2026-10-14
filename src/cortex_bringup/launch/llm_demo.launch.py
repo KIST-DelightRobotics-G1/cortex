@@ -34,10 +34,11 @@ def generate_launch_description() -> LaunchDescription:
     params = os.path.join(config, 'cortex_params.yaml')
 
     def node(pkg, exe, name=None, extra=None, condition=None):
-        level, events = node_logging(os.path.join(config, 'logging.yaml'), name or exe)
+        level, events, record = node_logging(os.path.join(config, 'logging.yaml'), name or exe)
         return Node(package=pkg, executable=exe, name=name or exe, output='screen',
                     parameters=[params] + ([extra] if extra else [])
-                    + [{'log_events': ParameterValue(events, value_type=str)}],
+                    + [{'log_events': ParameterValue(events, value_type=str),
+                        'record_events': ParameterValue(record, value_type=str)}],
                     arguments=['--ros-args', '--log-level', level], condition=condition)
 
     speech = IfCondition(LaunchConfiguration('speech'))

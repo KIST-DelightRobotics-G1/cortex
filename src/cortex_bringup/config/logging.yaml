@@ -3,9 +3,12 @@
 #   level   ROS log level: debug | info | warn | error | fatal (node value wins over the top one).
 #           At info each node prints one startup line plus warnings/errors; warn hides the startup line.
 #   events  opt-in event lines, "EVENT_NAME {json}". Not listed = silent. "all" = every topic.
+#   record  topics published on /cortex/events for the session recorder, independent of the
+#           console. "all" = everything, "" = none. Top-level value; a node may override it.
 #
 # Topics per node (default-on ones are listed below; the rest are commented out):
-#   orchestrator_node  plan      PLAN_STEP, PLAN_END, PLAN_CANCEL, PLAN_IGNORED, REWRITE, SCENARIO
+#   orchestrator_node  session   SESSION_START, SESSION_END (one voice command: utterance → outcome)
+#                      plan      PLAN_STEP, PLAN_END, PLAN_CANCEL, PLAN_IGNORED, REWRITE, SCENARIO
 #                      precheck  PRECHECK_CONFIG, PRECHECK_RESULT, PRECHECK_STATE
 #                      subtask   SUBTASK_SENT, WAIT_IDLE, STUB_DISPATCH
 #                      state     ROBOT_STATE
@@ -24,9 +27,10 @@
 #   gui_bridge_node    client    GUI_CLIENT
 
 level: info
+record: all
 
 nodes:
-  orchestrator_node: {events: [plan, precheck, subtask]}
+  orchestrator_node: {events: [session, plan, precheck, subtask]}
   detector_node:     {events: [config, status, check]}
   stt_node:          {events: [transcript]}
   # llm_node:        {events: [request, line, timing]}

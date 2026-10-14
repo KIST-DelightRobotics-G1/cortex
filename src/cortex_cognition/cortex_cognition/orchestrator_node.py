@@ -299,10 +299,11 @@ class OrchestratorNode(Node):
 
         g = self.get_parameter
         # Console events (logging.yaml → log_events). Topic → events:
+        #   session: SESSION_START SESSION_END (one voice command, from the executor)
         #   plan: PLAN_STEP PLAN_END PLAN_CANCEL PLAN_IGNORED REWRITE SCENARIO
         #   precheck: PRECHECK_CONFIG PRECHECK_RESULT PRECHECK_STATE
         #   subtask: SUBTASK_SENT WAIT_IDLE STUB_DISPATCH · state: ROBOT_STATE · config: VLA_PROMPT TTS_WARMUP
-        self.events = EventLog(self, known=('plan', 'precheck', 'subtask', 'state', 'config'))
+        self.events = EventLog(self, known=('session', 'plan', 'precheck', 'subtask', 'state', 'config'))
         scenario_dir = g('scenario_dir').value
         tick_hz = float(g('tick_rate_hz').value)
         self.mode = g('planner_mode').value

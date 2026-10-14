@@ -39,8 +39,9 @@ def _nodes(context):
                            for key, value in overrides.items()})
         if executable == 'llm_node' and llm_backend:
             layers.append({'backend': ParameterValue(llm_backend, value_type=str)})
-        level, events = node_logging(logging_file, executable)
-        layers.append({'log_events': ParameterValue(events, value_type=str)})
+        level, events, record = node_logging(logging_file, executable)
+        layers.append({'log_events': ParameterValue(events, value_type=str),
+                       'record_events': ParameterValue(record, value_type=str)})
         nodes.append(Node(package=package, executable=executable, name=executable,
                           output='screen', parameters=layers,
                           arguments=['--ros-args', '--log-level', level]))

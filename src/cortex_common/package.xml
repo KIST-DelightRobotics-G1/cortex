@@ -5,10 +5,12 @@
   <version>0.0.1</version>
   <description>
     Small helpers shared by every cortex node. Today: EventLog, the opt-in console
-    events chosen per node in cortex_bringup/config/logging.yaml.
+    and recorded events chosen per node in cortex_bringup/config/logging.yaml.
   </description>
   <maintainer email="park50260@gmail.com">박성용</maintainer>
   <license>Apache-2.0</license>
+
+  <exec_depend>std_msgs</exec_depend>  <!-- String on /cortex/events -->
 
   <test_depend>python3-pytest</test_depend>
 

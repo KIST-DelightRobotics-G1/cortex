@@ -39,8 +39,8 @@ def test_logging_yaml_sets_level_and_events(tmp_path):
     for node in main['_nodes'](ctx):
         stt = node.node_executable == 'stt_node'
         assert node._Node__arguments == ['--ros-args', '--log-level', 'debug' if stt else 'warn']
-        (events,) = node._Node__parameters[-1].values()      # log_events, the last layer
-        assert events.value == ('transcript' if stt else '')
+        events, record = node._Node__parameters[-1].values()  # the last layer
+        assert events.value == ('transcript' if stt else '') and record.value == ''
 
 
 def test_llm_backend_override_is_accepted_and_validated(tmp_path):
