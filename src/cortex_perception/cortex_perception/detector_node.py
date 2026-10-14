@@ -21,6 +21,7 @@ from kist_msgs.msg import CompressedColorFrame
 
 from cortex_msgs.msg import Detection, DetectionArray
 from cortex_msgs.srv import CheckTarget
+from cortex_common.events import EventLog
 from .detector_logging import DetectorLogStats
 from .detector_jsonl import DetectorJsonl
 from .detection import (DetectionRecord, PresenceWindow, Verdict, YoloDetector,
@@ -37,7 +38,7 @@ class DetectorNode(Node):
             'model': 'yolo26s.pt', 'model_sha256': '', 'device': '', 'rate_hz': 8.0, 'window_s': 0.6,
             'default_min_confidence': 0.4, 'infer_conf': 0.25, 'imgsz': 640,
             'min_frames': 3, 'allow_unstamped': False, 'require_latest_hit': False,
-            'diagnostics_log_enabled': False, 'diagnostics_log_period_s': 2.0,
+            'diagnostics_log_period_s': 2.0,
             'diagnostics_jsonl_enabled': False, 'diagnostics_jsonl_dir': '',
             'diagnostics_jsonl_max_bytes': 10*1024*1024, 'diagnostics_jsonl_backup_count': 4,
             'target_keys': ['fridge_door', 'fridge', 'cucumber', 'user'],
@@ -57,10 +58,12 @@ class DetectorNode(Node):
             raise ValueError('invalid inference settings')
         if g('camera_transport') not in ('h264', 'raw', 'compressed'):
             raise ValueError('camera_transport must be h264, raw or compressed')
-        self._log_enabled = bool(g('diagnostics_log_enabled'))
+        # Console events (logging.yaml): config = YOLO_CONFIG, status = YOLO_STATUS, check = YOLO_CHECK.
+        self._events = EventLog(self, known=('config', 'status', 'check'))
         self._jsonl = None
         jsonl_enabled = bool(g('diagnostics_jsonl_enabled'))
-        self._diagnostics_enabled = self._log_enabled or jsonl_enabled
+        self._diagnostics_enabled = (jsonl_enabled or self._events.on('status')
+                                     or self._events.on('check'))
         self._jsonl_last_error = ''
         log_period = float(g('diagnostics_log_period_s'))
         if self._diagnostics_enabled and (not math.isfinite(log_period) or log_period < 0.5):
@@ -117,7 +120,7 @@ class DetectorNode(Node):
                 self.get_logger().info(f'YOLO_JSONL path={state["path"]}')
         self.get_logger().info(f'detector backend={self.backend}, model={self.model_name}, '
                                f'loaded={self._model is not None}, min_frames={g("min_frames")}')
-        self._log('YOLO_CONFIG', backend=self.backend, model=self.model_name,
+        self._log('config', 'YOLO_CONFIG', backend=self.backend, model=self.model_name,
                   loaded=self._model is not None, configured_device=g('device'),
                   expected_model_sha256=g('model_sha256'),
                   camera_topic=g('camera_topic'), camera_transport=g('camera_transport'),
@@ -135,14 +138,13 @@ class DetectorNode(Node):
         if self._jsonl is not None:
             self._jsonl.record(event, ros_time_ns=self.get_clock().now().nanoseconds, **fields)
 
-    def _log(self, event, *, json_fields=None, **fields):
-        if self._log_enabled:
-            self.get_logger().info(event + ' ' + json.dumps(fields, ensure_ascii=False))
+    def _log(self, topic, event, *, json_fields=None, **fields):
+        self._events(topic, event, **fields)
         self._json_log(event, **fields, **(json_fields or {}))
 
     def _log_status(self):
         state = self._jsonl.status() if self._jsonl is not None else None
-        self._log('YOLO_STATUS', **self._stats.snapshot(), **({'jsonl': state} if state else {}))
+        self._log('status', 'YOLO_STATUS', **self._stats.snapshot(), **({'jsonl': state} if state else {}))
         if state and state['error'] and state['error'] != self._jsonl_last_error:
             self._jsonl_last_error = state['error']
             self.get_logger().warning(f'YOLO_JSONL disabled: {state["error"]}')
@@ -303,7 +305,7 @@ class DetectorNode(Node):
                                         request.min_confidence, request.max_age_s,
                                         diagnostics=diagnostic, frame_evidence=frames)
         if diagnostic is not None:
-            self._log('YOLO_CHECK', target=request.target, **diagnostic, json_fields={'frames': frames})
+            self._log('check', 'YOLO_CHECK', target=request.target, **diagnostic, json_fields={'frames': frames})
         return fill_response(response, result)
 
 

@@ -18,7 +18,8 @@ def context(tmp_path, only='false', llm_backend=''):
     ctx = LaunchContext()
     ctx.launch_configurations.update(params_file=str(BASE), detector_profile='',
                                      model=str(weight), device='cpu', detector_only=only,
-                                     llm_backend=llm_backend)
+                                     llm_backend=llm_backend,
+                                     logging_file=str(LAUNCH.parent/'config/logging.yaml'))
     return ctx
 
 
@@ -27,6 +28,19 @@ def test_standard_launch_builds_full_graph_and_detector_only(tmp_path):
     full = main['_nodes'](context(tmp_path))
     assert len(full) == 7 and all(isinstance(n, Node) for n in full)
     assert len(main['_nodes'](context(tmp_path, 'true'))) == 1
+
+
+def test_logging_yaml_sets_level_and_events(tmp_path):
+    main = runpy.run_path(str(LAUNCH/'cortex.launch.py'))
+    spec = tmp_path/'logging.yaml'
+    spec.write_text('level: warn\nnodes:\n  stt_node: {level: debug, events: [transcript]}\n')
+    ctx = context(tmp_path)
+    ctx.launch_configurations['logging_file'] = str(spec)
+    for node in main['_nodes'](ctx):
+        stt = node.node_executable == 'stt_node'
+        assert node._Node__arguments == ['--ros-args', '--log-level', 'debug' if stt else 'warn']
+        (events,) = node._Node__parameters[-1].values()      # log_events, the last layer
+        assert events.value == ('transcript' if stt else '')
 
 
 def test_llm_backend_override_is_accepted_and_validated(tmp_path):

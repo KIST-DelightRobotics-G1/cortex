@@ -1,0 +1,35 @@
+# Console logging per node. Read by the launch files (logging_file:=/path to swap).
+#
+#   level   ROS log level: debug | info | warn | error | fatal (node value wins over the top one).
+#           At info each node prints one startup line plus warnings/errors; warn hides the startup line.
+#   events  opt-in event lines, "EVENT_NAME {json}". Not listed = silent. "all" = every topic.
+#
+# Topics per node (default-on ones are listed below; the rest are commented out):
+#   orchestrator_node  plan      PLAN_STEP, PLAN_END, PLAN_CANCEL, PLAN_IGNORED, REWRITE, SCENARIO
+#                      precheck  PRECHECK_CONFIG, PRECHECK_RESULT, PRECHECK_STATE
+#                      subtask   SUBTASK_SENT, WAIT_IDLE, STUB_DISPATCH
+#                      state     ROBOT_STATE
+#                      config    VLA_PROMPT, TTS_WARMUP
+#   detector_node      config    YOLO_CONFIG
+#                      status    YOLO_STATUS (every diagnostics_log_period_s)
+#                      check     YOLO_CHECK (each CheckTarget query)
+#   stt_node           transcript STT_TRANSCRIPT
+#                      session   STT_SESSION (stream start / restart / stop)
+#   llm_node           request   LLM_REQUEST
+#                      line      LLM_LINE_SKIPPED, LLM_LINE_BLOCKED
+#                      timing    LLM_DONE
+#   tts_node           say       TTS_SAY, TTS_CANCEL, TTS_PUBLISHED
+#                      prefetch  TTS_PREFETCH
+#   speaker_node       playback  SPEAKER_BARGE_IN
+#   gui_bridge_node    client    GUI_CLIENT
+
+level: info
+
+nodes:
+  orchestrator_node: {events: [plan, precheck, subtask]}
+  detector_node:     {events: [config, status, check]}
+  stt_node:          {events: [transcript]}
+  # llm_node:        {events: [request, line, timing]}
+  # tts_node:        {events: [say, prefetch]}
+  # speaker_node:    {events: [playback]}
+  # gui_bridge_node: {events: [client]}

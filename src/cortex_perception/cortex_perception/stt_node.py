@@ -49,6 +49,7 @@ from rclpy.qos import qos_profile_sensor_data
 from scipy.signal import butter, sosfilt
 from std_msgs.msg import String
 
+from cortex_common.events import EventLog
 from g1_onboard_msgs.msg import SpeakerState
 from kist_msgs.msg import AudioChunk
 
@@ -239,6 +240,8 @@ class SttNode(Node):
         self.declare_parameter('echo_cancel_lead_ms', 0)
 
         g = self.get_parameter
+        # Console events (logging.yaml): transcript = STT_TRANSCRIPT, session = STT_SESSION.
+        self.events = EventLog(self, known=('transcript', 'session'))
         self._config = STTConfig(
             backend=STTBackend(g('backend').value),
             language_code=g('language_code').value,
@@ -409,8 +412,8 @@ class SttNode(Node):
     def _emit_transcript(self, event: TranscriptEvent) -> None:
         """Publish the transcript. Called from the worker thread."""
         self.pub.publish(String(data=event.text))
-        self.get_logger().info(
-            f'transcript: {event.text!r} (final={event.is_final}, conf={event.confidence})')
+        self.events('transcript', 'STT_TRANSCRIPT', text=event.text, final=event.is_final,
+                    conf=event.confidence)
 
     def _drain_audio_queue(self) -> int:
         """재연결 전 쌓인 stale 오디오를 모두 버린다. 버린 청크 수를 반환."""
@@ -493,11 +496,11 @@ class SttNode(Node):
             try:
                 if reconnect_count == 0:
                     self._state = STTState.CONNECTING
-                    self.get_logger().info('Google streaming session started')
+                    self.events('session', 'STT_SESSION', change='started', backend='v1')
                 else:
                     self._state = STTState.RECONNECTING
-                    self.get_logger().info(
-                        f'Google reconnecting (attempt {reconnect_count}/{_MAX_RECONNECT})')
+                    self.events('session', 'STT_SESSION', change='reconnecting', backend='v1',
+                                attempt=reconnect_count, max_attempts=_MAX_RECONNECT)
 
                 requests = self._google_request_gen()
                 responses = client.streaming_recognize(config=streaming_config, requests=requests)
@@ -555,8 +558,8 @@ class SttNode(Node):
                 if end_reason is None:
                     # Keep the existing stale-audio policy for unannounced EOF.
                     dropped = self._drain_audio_queue()
-                    self.get_logger().info(
-                        f'Google stream ended, restarting (flushed {dropped} stale chunks)')
+                    self.events('session', 'STT_SESSION', change='restart', backend='v1',
+                                flushed_chunks=dropped)
                 # Audio arriving while an endpointed stream drains belongs to
                 # the next session; preserve it by skipping the flush above.
                 reconnect_count = 0
@@ -564,7 +567,7 @@ class SttNode(Node):
 
         if self._state != STTState.FAILED:
             self._state = STTState.IDLE
-        self.get_logger().info('Google worker stopped')
+        self.events('session', 'STT_SESSION', change='stopped', backend='v1')
 
     # --- Google Cloud STT v2 backend --------------------------------------
     def _google_v2_worker(self) -> None:
@@ -631,11 +634,12 @@ class SttNode(Node):
             try:
                 if reconnect_count:
                     self._state = STTState.RECONNECTING
-                    self.get_logger().info(f'Google v2 reconnecting ({reconnect_count}/{_MAX_RECONNECT})')
+                    self.events('session', 'STT_SESSION', change='reconnecting', backend='v2',
+                                attempt=reconnect_count, max_attempts=_MAX_RECONNECT)
                 else:
-                    self.get_logger().info(
-                        f'Google v2 streaming session started (model={rc.model}, loc={loc}, '
-                        f'end_timeout={self._config.speech_end_timeout_s}s)')
+                    self.events('session', 'STT_SESSION', change='started', backend='v2',
+                                model=rc.model, location=loc,
+                                end_timeout_s=self._config.speech_end_timeout_s)
                 self._state = STTState.STREAMING
                 for response in client.streaming_recognize(requests=requests()):
                     if self._stop_event.is_set():
@@ -670,7 +674,7 @@ class SttNode(Node):
                     pass
         if self._state != STTState.FAILED:
             self._state = STTState.IDLE
-        self.get_logger().info('Google v2 worker stopped')
+        self.events('session', 'STT_SESSION', change='stopped', backend='v2')
 
     # --- DUMMY backend (local verification — no credentials) --------------
     def _dummy_worker(self) -> None:
@@ -680,7 +684,7 @@ class SttNode(Node):
         runs without a live mic or cloud credentials. All-zero chunks (silence
         injected by echo-cancel) are dropped.
         """
-        self.get_logger().info('DUMMY worker started')
+        self.events('session', 'STT_SESSION', change='started', backend='dummy')
         while not self._stop_event.is_set():
             try:
                 chunk = self._audio_queue.get(timeout=0.1)
@@ -698,7 +702,7 @@ class SttNode(Node):
                 continue
             self._emit_transcript(TranscriptEvent(
                 text=text, ts=time.monotonic(), is_final=True, confidence=None))
-        self.get_logger().info('DUMMY worker stopped')
+        self.events('session', 'STT_SESSION', change='stopped', backend='dummy')
 
 
 def main(args=None) -> None:

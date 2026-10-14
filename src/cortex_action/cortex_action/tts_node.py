@@ -44,6 +44,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool
 
+from cortex_common.events import EventLog
 from cortex_msgs.msg import ActionCmd
 from g1_onboard_msgs.msg import AudioPCM
 
@@ -105,6 +106,8 @@ class TtsNode(Node):
         self.declare_parameter('request_timeout_s', 5.0)
 
         g = self.get_parameter
+        # Console events (logging.yaml): say = TTS_SAY/TTS_CANCEL/TTS_PUBLISHED, prefetch = TTS_PREFETCH.
+        self.events = EventLog(self, known=('say', 'prefetch'))
         self._config = TTSConfig(
             backend=TTSBackend(g('backend').value),
             language_code=g('language_code').value,
@@ -187,7 +190,7 @@ class TtsNode(Node):
     def _on_barge_in(self, msg: Bool) -> None:
         """Barge-in: user interrupted, cut playback synthesis immediately."""
         if msg.data:
-            self.get_logger().info('barge-in: cancelling in-flight synthesis')
+            self.events('say', 'TTS_CANCEL', reason='barge-in')
             self.cancel()
 
     # --- cache --------------------------------------------------------------
@@ -219,7 +222,7 @@ class TtsNode(Node):
             pcm = asyncio.run(self._fetch_pcm(text))
             if pcm:
                 self._cache_put(text, pcm)
-                self.get_logger().info(f'prefetched {text!r} ({len(pcm)} B)')
+                self.events('prefetch', 'TTS_PREFETCH', text=text, bytes=len(pcm))
         except Exception:  # noqa: BLE001
             self.get_logger().error(f'prefetch failed for {text!r}' + chr(10) + traceback.format_exc())
 
@@ -254,8 +257,8 @@ class TtsNode(Node):
         cached = self._cache_get(text)
         if cached is not None:
             self._publish(cached)
-            self.get_logger().info(
-                f'say {text!r}: cache hit, first publish +{(time.perf_counter() - t_req) * 1000:.0f} ms')
+            self.events('say', 'TTS_SAY', text=text, cache='hit',
+                        first_publish_ms=round((time.perf_counter() - t_req) * 1000))
             return
         if not self._client_id or not self._client_secret:
             self.get_logger().warning(f'synthesize: no credentials — dropping (text={text!r})')
@@ -268,11 +271,11 @@ class TtsNode(Node):
             if pcm is None:
                 return
             self._publish(pcm)
-            self.get_logger().info(
-                f'say {text!r}: cache miss, first publish +{(time.perf_counter() - t_req) * 1000:.0f} ms')
+            self.events('say', 'TTS_SAY', text=text, cache='miss',
+                        first_publish_ms=round((time.perf_counter() - t_req) * 1000))
             self._cache_put(text, pcm)
         except asyncio.CancelledError:
-            self.get_logger().info('synthesize: cancelled (barge-in / stop)')
+            self.events('say', 'TTS_CANCEL', reason='synthesis cancelled')
             raise
         except Exception:  # noqa: BLE001 - log + drop, no retry (TTSConfig policy)
             self.get_logger().error(f'synthesize: failed; dropping (text={text!r})' + chr(10) + traceback.format_exc())
@@ -380,7 +383,7 @@ class TtsNode(Node):
             msg.data = list(pcm[i:i + self._PUBLISH_CHUNK_BYTES])
             self.audio_pub.publish(msg)
             n += 1
-        self.get_logger().info(f'published {len(pcm)} bytes in {n} chunk(s)')
+        self.events('say', 'TTS_PUBLISHED', bytes=len(pcm), chunks=n)
 
 
 def main(args=None) -> None:

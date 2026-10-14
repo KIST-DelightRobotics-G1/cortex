@@ -39,6 +39,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, Image
 
+from cortex_common.events import EventLog
 from cortex_msgs.msg import TaskStatus, TraceEvent
 from kist_msgs.msg import CompressedColorFrame
 
@@ -110,6 +111,7 @@ class GuiBridgeNode(Node):
         self.declare_parameter('event_buffer', 200)
 
         g = self.get_parameter
+        self.events = EventLog(self, known=('client',))   # client = GUI_CLIENT
         self._transport = str(g('camera_transport').value).lower()
         self._host = str(g('ws_host').value)
         self._port = int(g('ws_port').value)
@@ -233,13 +235,13 @@ class GuiBridgeNode(Node):
         except Exception:                        # noqa: BLE001 - client gone already
             return
         self._ws_clients.add(ws)
-        self.get_logger().info(f'gui client connected ({len(self._ws_clients)})')
+        self.events('client', 'GUI_CLIENT', change='connected', clients=len(self._ws_clients))
         try:
             async for _ in ws:                   # renderer never sends; just await close
                 pass
         finally:
             self._ws_clients.discard(ws)
-            self.get_logger().info(f'gui client left ({len(self._ws_clients)})')
+            self.events('client', 'GUI_CLIENT', change='left', clients=len(self._ws_clients))
 
     async def _pump(self) -> None:
         """Broadcast latest status (on change) + latest frame (on change) to all

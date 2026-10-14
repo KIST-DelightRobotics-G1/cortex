@@ -28,7 +28,6 @@ that trade-off is accepted for simplicity.
 """
 
 import glob
-import json
 import os
 import time
 from abc import ABC, abstractmethod
@@ -45,6 +44,7 @@ from std_msgs.msg import Bool, String
 from cortex_msgs.msg import (ActionCmd, PlanRequest, PlanStep, SubtaskCmd, SubtaskState,
                              TaskStatus, TraceEvent)
 from cortex_msgs.srv import CheckTarget
+from cortex_common.events import EventLog
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
@@ -229,20 +229,20 @@ class NavigationConnector(Connector):
     """`navigation` -> LocoCommand / named goal -> Gearsonic Handler (stub)."""
 
     def dispatch(self, node, payload) -> None:
-        node.get_logger().info(f'(stub) navigation dispatch: {payload!r}')
+        node.events('subtask', 'STUB_DISPATCH', executor='navigation', payload=payload)
 
     def cancel(self, node) -> None:
-        node.get_logger().info('(stub) navigation cancel')
+        node.events('subtask', 'STUB_DISPATCH', executor='navigation', cancel=True)
 
 
 class VlaConnector(Connector):
     """`vla` -> arm/hand joint inference -> Gearsonic Handler (stub)."""
 
     def dispatch(self, node, payload) -> None:
-        node.get_logger().info(f'(stub) vla dispatch: {payload!r}')
+        node.events('subtask', 'STUB_DISPATCH', executor='vla', payload=payload)
 
     def cancel(self, node) -> None:
-        node.get_logger().info('(stub) vla cancel')
+        node.events('subtask', 'STUB_DISPATCH', executor='vla', cancel=True)
 
 
 # ===========================================================================
@@ -279,7 +279,6 @@ class OrchestratorNode(Node):
         self.declare_parameter('trace_topic', '/cortex/trace')
         self.declare_parameter('detector_service', '/cortex/detector/check')
         self.declare_parameter('detector_call_timeout_s', 0.3)
-        self.declare_parameter('diagnostics_log_enabled', False)
         self.declare_parameter('stop_keywords', ['그만', '멈춰', '정지', '스톱'])
         self.declare_parameter('accept_timeout_s', 0.5)
         self.declare_parameter('stale_s', 1.0)
@@ -298,7 +297,11 @@ class OrchestratorNode(Node):
         self.declare_parameter('ack_phrase', '네.')      # spoken the moment a request goes to the LLM; '' = off
 
         g = self.get_parameter
-        self._diagnostics_log_enabled = bool(g('diagnostics_log_enabled').value)
+        # Console events (logging.yaml → log_events). Topic → events:
+        #   plan: PLAN_STEP PLAN_END PLAN_CANCEL PLAN_IGNORED REWRITE SCENARIO
+        #   precheck: PRECHECK_CONFIG PRECHECK_RESULT PRECHECK_STATE
+        #   subtask: SUBTASK_SENT WAIT_IDLE STUB_DISPATCH · state: ROBOT_STATE · config: VLA_PROMPT TTS_WARMUP
+        self.events = EventLog(self, known=('plan', 'precheck', 'subtask', 'state', 'config'))
         scenario_dir = g('scenario_dir').value
         tick_hz = float(g('tick_rate_hz').value)
         self.mode = g('planner_mode').value
@@ -414,16 +417,16 @@ class OrchestratorNode(Node):
             stop_speech=lambda: self.stop_pub.publish(Bool(data=True)),
             trace=self._trace,
             status=self._status_llm,
-            log=lambda s: self.get_logger().info(s),
+            log=self.events,
         )
         self.rewriter = rewrite.Rewriter.load(g('plan_rewrites_path').value, self.cfg)
         self._load_vla_prompts(g('vla_prompts_path').value)
         self._exec = ex.Executor(self.cfg, ports, prm, rewriter=self.rewriter)
-        self._diagnostic_log('PRECHECK_CONFIG', service=g('detector_service').value,
-                             detector_call_timeout_s=self._det_timeout,
-                             precheck_timeout_s=prm.precheck_timeout_s,
-                             precheck_retry_s=prm.precheck_retry_s,
-                             detector_fail_open=prm.detector_fail_open)
+        self.events('precheck', 'PRECHECK_CONFIG', service=g('detector_service').value,
+                    detector_call_timeout_s=self._det_timeout,
+                    precheck_timeout_s=prm.precheck_timeout_s,
+                    precheck_retry_s=prm.precheck_retry_s,
+                    detector_fail_open=prm.detector_fail_open)
         # 100 ms absence monitor (accept / stale / step timeouts); everything else is event-driven.
         self.create_timer(0.1, self._exec.tick, callback_group=grp)
         self.get_logger().info(
@@ -462,7 +465,7 @@ class OrchestratorNode(Node):
         self._warm_queue = sorted(t for t in texts if t and t != self.ack_phrase)
         if self.ack_phrase:
             self._warm_queue.append(self.ack_phrase)         # popped first
-        self.get_logger().info(f'tts cache warm-up: {len(self._warm_queue)} sentences queued for prefetch')
+        self.events('config', 'TTS_WARMUP', sentences=len(self._warm_queue))
 
     def _new_plan_id(self) -> str:
         self._seq += 1
@@ -512,7 +515,7 @@ class OrchestratorNode(Node):
         else:
             return
         if (self.at, self.holding) != before:      # DONE 은 3회 반복되므로 바뀔 때만 남긴다
-            self.get_logger().info(f'robot state: at={self.at} holding={self.holding}')
+            self.events('state', 'ROBOT_STATE', at=self.at, holding=self.holding)
 
     # --- ports --------------------------------------------------------------
     def _say(self, text: str) -> None:
@@ -531,7 +534,7 @@ class OrchestratorNode(Node):
             return
         log.info(f'vla prompts: {len(filled)} filled ({path})')
         for key, sentence in filled.items():
-            log.info(f'  {key:<28} {sentence!r}')
+            self.events('config', 'VLA_PROMPT', key=key, sentence=sentence)
         if empty:
             log.warning(
                 f'vla prompts: {len(empty)} NOT FILLED → template sentence, no VLA DONE '
@@ -547,8 +550,8 @@ class OrchestratorNode(Node):
         self.cmd_pub[which].publish(
             SubtaskCmd(plan_id=plan_id, index=step.index, action=step.action,
                        args=list(step.args), instruction=step.instruction, cancel=False))
-        self._diagnostic_log('SUBTASK_SENT', plan_id=plan_id, index=step.index,
-                             executor=which, action=step.action, args=list(step.args))
+        self.events('subtask', 'SUBTASK_SENT', plan_id=plan_id, index=step.index,
+                    executor=which, action=step.action, args=list(step.args))
 
     def _send_cancel(self, which: str, plan_id: str, index: int) -> None:
         self.cmd_pub[which].publish(SubtaskCmd(plan_id=plan_id, index=index, cancel=True))
@@ -560,10 +563,10 @@ class OrchestratorNode(Node):
         started = time.monotonic()
 
         def finish(found, detail):
-            if self._diagnostics_log_enabled:
+            if self.events.on('precheck'):
                 step = self._exec.steps.get(self._exec.cur) if self._exec else None
-                self._diagnostic_log(
-                    'PRECHECK_RESULT', plan_id=self._exec.plan_id if self._exec else '',
+                self.events(
+                    'precheck', 'PRECHECK_RESULT', plan_id=self._exec.plan_id if self._exec else '',
                     index=self._exec.cur if self._exec else -1,
                     action=step.action if step else '', target=target, found=found,
                     detail=detail, service_ms=round(1000*(time.monotonic()-started), 1))
@@ -586,19 +589,16 @@ class OrchestratorNode(Node):
             return finish(False, 'detector_error')
         return finish(bool(r.found), f'{r.label} {r.confidence:.2f}' if r.found else r.detail)
 
-    def _diagnostic_log(self, event: str, **fields) -> None:
-        if self._diagnostics_log_enabled:
-            self.get_logger().info(event + ' ' + json.dumps(fields, ensure_ascii=False))
-
     def _trace(self, kind: int, plan_id: str, index: int, title: str, body: str) -> None:
         msg = TraceEvent(plan_id=plan_id, kind=int(kind), index=int(index), title=title, body=body)
         msg.header.stamp = self.get_clock().now().to_msg()
         self.trace_pub.publish(msg)
         # Mirror existing events only; the executor still owns all decisions.
-        event = {ex.T_PLAN_LINE: 'PLAN_STEP', ex.T_PLAN_END: 'PLAN_END',
-                 ex.T_GROUND: 'PRECHECK_STATE', ex.T_CANCEL: 'PLAN_CANCEL'}.get(kind)
+        topic, event = {ex.T_PLAN_LINE: ('plan', 'PLAN_STEP'), ex.T_PLAN_END: ('plan', 'PLAN_END'),
+                        ex.T_GROUND: ('precheck', 'PRECHECK_STATE'),
+                        ex.T_CANCEL: ('plan', 'PLAN_CANCEL')}.get(kind, (None, None))
         if event:
-            self._diagnostic_log(event, plan_id=plan_id, index=index, title=title, detail=body)
+            self.events(topic, event, plan_id=plan_id, index=index, title=title, detail=body)
 
     def _status_llm(self, state: int, task: str, subtask: str, idx: int, count: int,
                     detail: str) -> None:
@@ -632,7 +632,7 @@ class OrchestratorNode(Node):
         self._begin(sc)
 
     def _begin(self, sc: Scenario) -> None:
-        self.get_logger().info(f'begin scenario {sc.name!r} ({len(sc.sub_tasks)} sub-tasks)')
+        self.events('plan', 'SCENARIO', name=sc.name, sub_tasks=len(sc.sub_tasks))
         self._active = sc
         self._index = 0
         if not sc.sub_tasks:

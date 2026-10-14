@@ -81,7 +81,7 @@ def test_console_logs_preserve_check_result_and_report_pipeline(monkeypatch, ena
     rclpy.init()
     node = detector_node.DetectorNode(parameter_overrides=[
         Parameter('backend', value='yolo'), Parameter('camera_transport', value='raw'),
-        Parameter('diagnostics_log_enabled', value=enabled)])
+        Parameter('log_events', value='config,status,check' if enabled else '')])
     logs = []
     monkeypatch.setattr(node, 'get_logger', lambda: SimpleNamespace(info=logs.append))
     try:
@@ -130,7 +130,7 @@ def test_optional_jsonl_records_frames_and_check_without_changing_decision(monke
     node = detector_node.DetectorNode(parameter_overrides=[
         Parameter('backend', value='yolo'), Parameter('camera_transport', value='raw'),
         Parameter('require_latest_hit', value=True),
-        Parameter('diagnostics_log_enabled', value=console),
+        Parameter('log_events', value='check' if console else ''),
         Parameter('diagnostics_jsonl_enabled', value=jsonl),
         Parameter('diagnostics_jsonl_dir', value=str(tmp_path))])
     logs = []

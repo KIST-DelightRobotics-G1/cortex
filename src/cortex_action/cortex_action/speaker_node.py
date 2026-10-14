@@ -38,6 +38,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Bool, Header
 
+from cortex_common.events import EventLog
 from g1_onboard_msgs.msg import AudioPCM, SpeakerState
 
 SAMPLE_RATE, CHANNELS, BIT_DEPTH = 16000, 1, 16
@@ -90,6 +91,7 @@ class SpeakerNode(Node):
         self.declare_parameter('play_margin_s', 0.2)
 
         g = self.get_parameter
+        self.events = EventLog(self, known=('playback',))   # playback = SPEAKER_BARGE_IN
         self._max_q = int(g('max_queue_depth').value)
         if not 1 <= self._max_q < 256:
             raise ValueError(f'max_queue_depth must be in [1, 255]; got {self._max_q}')
@@ -153,7 +155,7 @@ class SpeakerNode(Node):
             n -= len(self._queue)
             self._stop_pending = True
         self._wake.set()
-        self.get_logger().info(f'barge-in: dropped {n} queued chunk(s), stopping playback')
+        self.events('playback', 'SPEAKER_BARGE_IN', dropped_chunks=n)
 
     def _alloc_chunk_id(self) -> int:
         cid = self._next_chunk_id

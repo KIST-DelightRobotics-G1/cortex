@@ -24,15 +24,21 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+
+from cortex_bringup.runtime_config import node_logging
 
 
 def generate_launch_description() -> LaunchDescription:
-    params = os.path.join(
-        get_package_share_directory('cortex_bringup'), 'config', 'cortex_params.yaml')
+    config = os.path.join(get_package_share_directory('cortex_bringup'), 'config')
+    params = os.path.join(config, 'cortex_params.yaml')
 
     def node(pkg, exe, name=None, extra=None, condition=None):
+        level, events = node_logging(os.path.join(config, 'logging.yaml'), name or exe)
         return Node(package=pkg, executable=exe, name=name or exe, output='screen',
-                    parameters=[params] + ([extra] if extra else []), condition=condition)
+                    parameters=[params] + ([extra] if extra else [])
+                    + [{'log_events': ParameterValue(events, value_type=str)}],
+                    arguments=['--ros-args', '--log-level', level], condition=condition)
 
     speech = IfCondition(LaunchConfiguration('speech'))
 

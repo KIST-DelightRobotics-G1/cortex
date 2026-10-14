@@ -122,28 +122,23 @@ are outside this deployment update; see the handoff notes before robot operation
 
 ## Console diagnostics for field trials
 
-The `SYS-REQ-44-yolo-console-diagnostics` branch adds INFO messages to the existing
-node loggers. Use the standard launch command after building this branch (rebuild
-the image when using Docker). No separate collector, bag, video writer, new topic,
-or message/service definition is added. Optional detailed JSONL files are described below. Presence thresholds, retries and executor
-transitions are unchanged from main, including its **1.0 s** precheck timeout.
-
-The standard YAML enables the logs. Add the following keys to a custom site YAML
-if it predates this branch; parameters are read at node startup:
+Console messages are chosen per node in `src/cortex_bringup/config/logging.yaml`
+(launch argument `logging_file:=/absolute/path.yaml` to use another file). The
+shipped file turns on detector `config`, `status`, `check` and orchestrator `plan`,
+`precheck`, `subtask`. Remove a topic from a node's `events` list to silence it.
+No separate collector, bag, video writer, new topic, or message/service definition
+is added. Optional detailed JSONL files are described below. Presence thresholds,
+retries and executor transitions are unchanged, including the **1.0 s** precheck timeout.
 
 ```yaml
-detector_node:
-  ros__parameters:
-    diagnostics_log_enabled: true
-    diagnostics_log_period_s: 2.0
-orchestrator_node:
-  ros__parameters:
-    diagnostics_log_enabled: true
+nodes:
+  orchestrator_node: {events: [plan, precheck, subtask]}
+  detector_node:     {events: [config, status, check]}
 ```
 
-Merge these keys into the existing node sections rather than replacing the full
-site configuration. Set both enabled flags to false to disable the additional
-messages. The summary period must be at least 0.5 s. Normal per-frame processing
+The file is read at launch; edit it and restart (rebuild the image when using
+Docker, or pass `logging_file:=`). `detector_node.diagnostics_log_period_s` in the
+params YAML sets the `YOLO_STATUS` period and must be at least 0.5 s. Normal per-frame processing
 does not print a line; the summary is periodic, and each actual CheckTarget request
 prints one result. Orchestrator prechecks operate in `planner_mode: llm`.
 
@@ -230,7 +225,7 @@ detector_node:
     diagnostics_jsonl_backup_count: 4      # current file plus four backups
 ```
 
-Recording is **off by default** and independent of `diagnostics_log_enabled`.
+Recording is **off by default** and independent of the console events in `logging.yaml`.
 With recording off, no recording directory, file or writer thread is created.
 Parameters are read at startup; changing a running parameter is not a toggle.
 
