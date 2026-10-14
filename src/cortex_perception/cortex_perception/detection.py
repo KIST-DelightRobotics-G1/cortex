@@ -116,26 +116,56 @@ class PresenceWindow:
             self._last_stamp, self._ever_frame, self._fault = stamp_ns, True, ''
             return True
 
-    def check(self, target, now, min_confidence=0., max_age_s=0.):
+    def check(self, target, now, min_confidence=0., max_age_s=0., *, diagnostics=None, frame_evidence=None):
+        # Observe the very same locked decision; never put diagnostic reasons on the wire.
+        if diagnostics is not None:
+            diagnostics.update(window_s=self.window_s, min_frames=self.min_frames,
+                               require_latest_hit=self.require_latest_hit, latest_hit=None,
+                               max_candidate_confidence=None, latest_frame_age_ms=None)
+
+        def finish(verdict, reason=''):
+            if diagnostics is not None:
+                diagnostics.update(found=verdict.found, detail=verdict.detail,
+                                   reason=reason or verdict.detail, samples=verdict.samples,
+                                   hits=verdict.hits if verdict.samples >= self.min_frames else None)
+            return verdict
+
         labels = self.targets.get(target)
         if labels is None:
-            return Verdict(detail='unknown_target')
+            return finish(Verdict(detail='unknown_target'))
         if not (math.isfinite(min_confidence) and 0 <= min_confidence <= 1 and
                 math.isfinite(max_age_s) and max_age_s >= 0):
-            return Verdict(detail='invalid_request')
+            return finish(Verdict(detail='invalid_request'))
+        if diagnostics is not None:
+            diagnostics.update(min_confidence=min_confidence or self.min_confidence,
+                               max_age_s=min(max_age_s or self.window_s, self.window_s))
         with self._lock:
             if self._fault:
-                return Verdict(detail=self._fault)
+                return finish(Verdict(detail=self._fault))
             labels = labels & self.names
             if not labels:
-                return Verdict(detail='unsupported_class')
+                return finish(Verdict(detail='unsupported_class'))
             self._prune(now)
             age = min(max_age_s or self.window_s, self.window_s)
             frames = [r for r in self._frames if 0 <= now-r[0] <= age]
             if not frames:
-                return Verdict(detail='stale' if self._ever_frame else 'no_frame')
+                return finish(Verdict(detail='stale' if self._ever_frame else 'no_frame'))
+            if diagnostics is not None:
+                candidates = [best[label].confidence for _, _, best in frames
+                              for label in labels if label in best]
+                diagnostics.update(
+                    max_candidate_confidence=max(candidates, default=None),
+                    latest_frame_age_ms=round(1000*(now-frames[-1][0]), 1))
+            if frame_evidence is not None:
+                threshold = min_confidence or self.min_confidence
+                for observed_t, stamp, best in frames:
+                    candidate = max((best[label].confidence for label in labels if label in best), default=None)
+                    frame_evidence.append(dict(source_stamp_ns=stamp,
+                                               age_ms=round(1000*(now-observed_t), 1),
+                                               max_candidate_confidence=candidate,
+                                               hit=candidate is not None and candidate >= threshold))
             if len(frames) < self.min_frames:
-                return Verdict(detail='insufficient_frames', samples=len(frames))
+                return finish(Verdict(detail='insufficient_frames', samples=len(frames)))
             conf = min_confidence or self.min_confidence
             hits = []
             for _, stamp, best in frames:
@@ -143,10 +173,13 @@ class PresenceWindow:
                 if ds:
                     hits.append((max(ds, key=lambda d: d.confidence), stamp))
             latest_hit = bool(hits) and hits[-1][1] == frames[-1][1]
+            if diagnostics is not None:
+                diagnostics['latest_hit'] = latest_hit
             if len(hits)*2 <= len(frames) or (self.require_latest_hit and not latest_hit):
-                return Verdict(samples=len(frames), hits=len(hits))
+                reason = 'no_hits' if not hits else 'below_majority' if len(hits)*2 <= len(frames) else 'latest_miss'
+                return finish(Verdict(samples=len(frames), hits=len(hits)), reason)
             d, stamp = max(hits, key=lambda item: item[0].confidence)
-            return Verdict(True, detection=d, stamp_ns=stamp, samples=len(frames), hits=len(hits))
+            return finish(Verdict(True, detection=d, stamp_ns=stamp, samples=len(frames), hits=len(hits)), 'present')
 
 
 class YoloDetector:

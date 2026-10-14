@@ -28,6 +28,7 @@ that trade-off is accepted for simplicity.
 """
 
 import glob
+import json
 import os
 import time
 from abc import ABC, abstractmethod
@@ -278,6 +279,7 @@ class OrchestratorNode(Node):
         self.declare_parameter('trace_topic', '/cortex/trace')
         self.declare_parameter('detector_service', '/cortex/detector/check')
         self.declare_parameter('detector_call_timeout_s', 0.3)
+        self.declare_parameter('diagnostics_log_enabled', False)
         self.declare_parameter('stop_keywords', ['그만', '멈춰', '정지', '스톱'])
         self.declare_parameter('accept_timeout_s', 0.5)
         self.declare_parameter('stale_s', 1.0)
@@ -296,6 +298,7 @@ class OrchestratorNode(Node):
         self.declare_parameter('ack_phrase', '네.')      # spoken the moment a request goes to the LLM; '' = off
 
         g = self.get_parameter
+        self._diagnostics_log_enabled = bool(g('diagnostics_log_enabled').value)
         scenario_dir = g('scenario_dir').value
         tick_hz = float(g('tick_rate_hz').value)
         self.mode = g('planner_mode').value
@@ -416,6 +419,11 @@ class OrchestratorNode(Node):
         self.rewriter = rewrite.Rewriter.load(g('plan_rewrites_path').value, self.cfg)
         self._load_vla_prompts(g('vla_prompts_path').value)
         self._exec = ex.Executor(self.cfg, ports, prm, rewriter=self.rewriter)
+        self._diagnostic_log('PRECHECK_CONFIG', service=g('detector_service').value,
+                             detector_call_timeout_s=self._det_timeout,
+                             precheck_timeout_s=prm.precheck_timeout_s,
+                             precheck_retry_s=prm.precheck_retry_s,
+                             detector_fail_open=prm.detector_fail_open)
         # 100 ms absence monitor (accept / stale / step timeouts); everything else is event-driven.
         self.create_timer(0.1, self._exec.tick, callback_group=grp)
         self.get_logger().info(
@@ -539,6 +547,8 @@ class OrchestratorNode(Node):
         self.cmd_pub[which].publish(
             SubtaskCmd(plan_id=plan_id, index=step.index, action=step.action,
                        args=list(step.args), instruction=step.instruction, cancel=False))
+        self._diagnostic_log('SUBTASK_SENT', plan_id=plan_id, index=step.index,
+                             executor=which, action=step.action, args=list(step.args))
 
     def _send_cancel(self, which: str, plan_id: str, index: int) -> None:
         self.cmd_pub[which].publish(SubtaskCmd(plan_id=plan_id, index=index, cancel=True))
@@ -547,27 +557,48 @@ class OrchestratorNode(Node):
         """Synchronous detector query -> (found, detail). A non-empty detail with
         found=False means 'no verdict' (service missing / timeout / stale frame),
         handled according to detector_fail_open and the bounded precheck policy."""
+        started = time.monotonic()
+
+        def finish(found, detail):
+            if self._diagnostics_log_enabled:
+                step = self._exec.steps.get(self._exec.cur) if self._exec else None
+                self._diagnostic_log(
+                    'PRECHECK_RESULT', plan_id=self._exec.plan_id if self._exec else '',
+                    index=self._exec.cur if self._exec else -1,
+                    action=step.action if step else '', target=target, found=found,
+                    detail=detail, service_ms=round(1000*(time.monotonic()-started), 1))
+            return found, detail
+
         if not self.det_client.service_is_ready():
-            return False, 'no_detector'
+            return finish(False, 'no_detector')
         fut = self.det_client.call_async(CheckTarget.Request(target=target))
         deadline = time.monotonic() + self._det_timeout
         while not fut.done() and time.monotonic() < deadline:
             time.sleep(0.005)
         if not fut.done():
             fut.cancel()
-            return False, 'detector_timeout'
+            return finish(False, 'detector_timeout')
         try:
             r = fut.result()
         except Exception:
-            return False, 'detector_error'
+            return finish(False, 'detector_error')
         if r is None:
-            return False, 'detector_error'
-        return bool(r.found), (f'{r.label} {r.confidence:.2f}' if r.found else r.detail)
+            return finish(False, 'detector_error')
+        return finish(bool(r.found), f'{r.label} {r.confidence:.2f}' if r.found else r.detail)
+
+    def _diagnostic_log(self, event: str, **fields) -> None:
+        if self._diagnostics_log_enabled:
+            self.get_logger().info(event + ' ' + json.dumps(fields, ensure_ascii=False))
 
     def _trace(self, kind: int, plan_id: str, index: int, title: str, body: str) -> None:
         msg = TraceEvent(plan_id=plan_id, kind=int(kind), index=int(index), title=title, body=body)
         msg.header.stamp = self.get_clock().now().to_msg()
         self.trace_pub.publish(msg)
+        # Mirror existing events only; the executor still owns all decisions.
+        event = {ex.T_PLAN_LINE: 'PLAN_STEP', ex.T_PLAN_END: 'PLAN_END',
+                 ex.T_GROUND: 'PRECHECK_STATE', ex.T_CANCEL: 'PLAN_CANCEL'}.get(kind)
+        if event:
+            self._diagnostic_log(event, plan_id=plan_id, index=index, title=title, detail=body)
 
     def _status_llm(self, state: int, task: str, subtask: str, idx: int, count: int,
                     detail: str) -> None:
