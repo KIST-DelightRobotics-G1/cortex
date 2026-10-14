@@ -71,6 +71,8 @@ aliases:
 korean:
   fridge: 냉장고
   fridge_door: 냉장고 문
+  cupboard: 찬장
+  cupboard_door: 찬장 문
   cucumber: 오이
   tray: 트레이
   table: 테이블/식탁

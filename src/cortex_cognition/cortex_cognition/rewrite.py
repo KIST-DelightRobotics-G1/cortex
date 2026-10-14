@@ -9,12 +9,19 @@ in actions.yaml, so the LLM never sees them. Delete a rule, or the whole file,
 and plans go back to exactly what the LLM produced.
 
     Rewriter.load(path, cfg)      '' or a missing file → no rules
-    rw.between(prev, nxt)         Insert specs for the pair (prev, nxt), in order
+    rw.between(prev, nxt)         Insert specs for the pair (prev, nxt), in order;
+                                  prev is None for the plan's first line
 
 Matching: a pattern names an action (or a list of them) and optionally leading
 args; `args: [cucumber]` matches pick(cucumber) and take_out(cucumber, fridge).
 Because lines stream in order, the pair is checked when the second line
 arrives — always before it is dispatched.
+
+auto_open (a plan fix, not a demo patch): taking something out of a place with
+a door — take_out(x, <place>), or pick right after move_to(<place>) — gets an
+open(<door>) in front of it unless the line before already opens that door. The
+LLM drops that open about one time in ten. The rules are then matched against
+(open, take) as if the LLM had written the open, so demo inserts still apply.
 """
 
 from __future__ import annotations
@@ -39,6 +46,7 @@ class Insert:
     exec: str
     instruction: str
     title: str
+    say: str = ''            # spoken when the inserted step starts; '' = silent
 
 
 class Rewriter:
@@ -47,6 +55,10 @@ class Rewriter:
         self.cfg = cfg
         self.verbs = spec.get('verbs') or {}
         self.rules = [r for r in (spec.get('rules') or []) if r.get('enabled', True)]
+        auto = spec.get('auto_open') or {}
+        self.doors = dict(auto.get('doors') or {})           # place -> its door
+        self.open_before = set(auto.get('before') or [])
+        self.open_say = str(auto.get('say') or '')
         self._check()
 
     @classmethod
@@ -58,20 +70,43 @@ class Rewriter:
 
     @property
     def names(self) -> list:
-        return [r['name'] for r in self.rules]
+        return (['auto_open'] if self.doors else []) + [r['name'] for r in self.rules]
 
     # ------------------------------------------------------------------ match
-    def between(self, prev_action: str, prev_args: list,
-                nxt_action: str, nxt_args: list) -> list:
+    def between(self, prev_action, prev_args, nxt_action: str, nxt_args: list) -> list:
+        """Steps to insert in front of nxt. prev_action is None for the plan's first line."""
         out = []
+        door = self._missing_door(prev_action, prev_args or [], nxt_action, nxt_args)
+        if door:
+            out.append(self._insert('auto_open', {'a': 'open', 'args': [door],
+                                                  'say': self.open_say}))
+            prev_action, prev_args = 'open', [door]     # the rules see the open we just added
+        if prev_action is None:
+            return out
         for r in self.rules:
             a, b = r['between']
             if _matches(a, prev_action, prev_args) and _matches(b, nxt_action, nxt_args):
                 out += [self._insert(r['name'], ins) for ins in r['insert']]
         return out
 
+    def _missing_door(self, prev_action, prev_args: list, nxt_action: str, nxt_args: list):
+        """The door nxt needs opened first, or None (no door, or prev already opens it)."""
+        if not self.doors or nxt_action not in self.open_before:
+            return None
+        if nxt_action == 'take_out' and len(nxt_args) > 1:
+            place = nxt_args[1]
+        elif prev_action == 'move_to' and prev_args:
+            place = prev_args[0]
+        else:
+            return None
+        door = self.doors.get(place)
+        if door is None or (prev_action == 'open' and prev_args[:1] == [door]):
+            return None
+        return door
+
     def _insert(self, rule: str, ins: dict) -> Insert:
         verb, args = ins['a'], list(ins.get('args', []))
+        say = planner.fill(self.cfg, ins.get('say', ''), args[0] if args else '')
         v = self.verbs.get(verb)
         if v is not None:                        # demo-only verb defined in this file
             # VLA training sentence (vla_prompts.yaml) first, this file's template otherwise
@@ -80,14 +115,23 @@ class Rewriter:
                 *[en.get(x, x.replace('_', ' ')) for x in args])
             title = v.get('title', '{0} ' + v.get('ko', verb)).format(
                 *[planner.ko_name(self.cfg, x) for x in args])
-            return Insert(rule, verb, args, v['exec'], instruction, title)
+            return Insert(rule, verb, args, v['exec'], instruction, title, say)
         # a regular action from actions.yaml
         return Insert(rule, verb, args, planner.exec_of(self.cfg, verb),
                       planner.instruction_for(self.cfg, verb, args),
-                      planner.step_title(self.cfg, verb, args))
+                      planner.step_title(self.cfg, verb, args), say)
 
     # --------------------------------------------------------------- validate
     def _check(self) -> None:
+        actions = self.cfg.get('actions', {})
+        if self.doors:
+            if 'open' not in actions:
+                raise RewriteConfigError('auto_open needs the open action in actions.yaml')
+            unknown = self.open_before - set(actions)
+            if not self.open_before or unknown:
+                raise RewriteConfigError(f'auto_open.before must list known actions (unknown: {sorted(unknown)})')
+            if not all(isinstance(p, str) and isinstance(d, str) and p and d for p, d in self.doors.items()):
+                raise RewriteConfigError('auto_open.doors must map place -> door names')
         for name, v in self.verbs.items():
             if v.get('exec') not in ('nav', 'vla'):
                 raise RewriteConfigError(f'verb {name!r}: exec must be nav or vla')

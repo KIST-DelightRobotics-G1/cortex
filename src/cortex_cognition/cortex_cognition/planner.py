@@ -92,6 +92,10 @@ _PROMPT = """당신은 Unitree G1 가정용 보조 로봇의 태스크 분해기
 - 발화에 장소나 가구가 나오고 그곳이 at 과 다르면, 그 동작 앞에 move_to 를 넣는다.
 - 장소 언급이 없으면 이동하지 않고 지금 자리에서 한다.
 
+## 문이 있는 곳
+- 문이나 뚜껑으로 닫히는 가구·용기 안의 물건을 꺼내거나 집을 때는, 사용자가 "열어"라고 말하지 않아도
+  꺼내는 동작 바로 앞에 그 문을 여는 open 을 넣는다.
+
 ## 로봇 상태
 요청에는 로봇의 현재 상태가 함께 온다.
 - at: 지금 있는 장소. unknown 이면 위치를 모른다.
@@ -280,14 +284,18 @@ def _has_batchim(word: str) -> bool:
     return bool(ch) and 0xAC00 <= ord(ch) <= 0xD7A3 and (ord(ch) - 0xAC00) % 28 != 0
 
 
-def phrase(cfg: dict, key: str, target_key: str = '') -> str:
-    """Fixed phrase with Korean particles resolved: {ko} name, {i} 이/가, {eul} 을/를, {eun} 은/는."""
-    tpl = cfg.get('phrases', {}).get(key, '')
+def fill(cfg: dict, tpl: str, target_key: str = '') -> str:
+    """Template with Korean particles resolved: {ko} name, {i} 이/가, {eul} 을/를, {eun} 은/는."""
     if not tpl:
         return ''
     ko = ko_name(cfg, target_key)
     b = _has_batchim(ko)
     return tpl.format(ko=ko, i='이' if b else '가', eul='을' if b else '를', eun='은' if b else '는')
+
+
+def phrase(cfg: dict, key: str, target_key: str = '') -> str:
+    """Fixed phrase (actions.yaml phrases) with Korean particles resolved — see fill()."""
+    return fill(cfg, cfg.get('phrases', {}).get(key, ''), target_key)
 
 
 # ---------------------------------------------------------------------------

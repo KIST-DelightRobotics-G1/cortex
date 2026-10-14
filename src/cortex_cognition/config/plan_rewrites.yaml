@@ -7,7 +7,18 @@
 # 규칙: between 의 두 패턴이 계획에서 나란히 나오면 그 사이에 insert 를 끼운다.
 #   a     action 하나 또는 목록
 #   args  앞쪽 인자만 비교 (args: [cucumber] 는 pick(cucumber) · take_out(cucumber, fridge) 둘 다)
-# 끼운 단계는 말하지 않는다 (say 없음). 화면에는 계획 줄로 보인다.
+# 끼운 단계는 말하지 않는다 (say 를 적은 insert 만 말한다). 화면에는 계획 줄로 보인다.
+
+# 문이 있는 곳에서 꺼내기 전에 연다 — 시연 보정이 아니라 계획 보정이다. LLM 이 open 을
+# 빠뜨려도(현장 약 10%) 꺼내는 줄 바로 앞에 open(<문>) 을 넣는다. 대상 장소는
+#   take_out(물건, <장소>) 의 두 번째 인자, 또는 pick 바로 앞 줄 move_to(<장소>).
+# 바로 앞 줄이 이미 open(<문>) 이면 넣지 않는다. 넣은 뒤에는 아래 rules 가 (open, 꺼내기) 쌍으로 다시 본다.
+auto_open:
+  doors:                        # 장소 → 그 문 (actions.yaml 어휘 키)
+    fridge: fridge_door
+    cupboard: cupboard_door
+  before: [pick, take_out]
+  say: "{ko}{eul} 엽니다."      # {ko} = 문의 한국어 이름 → "냉장고 문을 엽니다."
 
 verbs:                        # 여기서만 쓰는 동사
   approach:

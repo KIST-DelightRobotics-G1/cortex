@@ -24,8 +24,9 @@ def actions(h):
 
 # --- matching -----------------------------------------------------------------------
 
-def test_shipped_file_has_the_two_fridge_rules():
-    assert RW.names == ['fridge_reach', 'fridge_back_off']
+def test_shipped_file_has_auto_open_and_the_two_fridge_rules():
+    assert RW.names == ['auto_open', 'fridge_reach', 'fridge_back_off']
+    assert RW.doors['fridge'] == 'fridge_door'
 
 
 def test_pair_match_and_built_step():
@@ -150,3 +151,60 @@ def test_preempting_plan_is_rewritten_too():
     assert h.x.plan_id == 'p2' and h.x.count == 8
     assert [a for _, a in actions(h)][2] == 'approach'
     assert planner.exec_of(CFG, 'pick') == 'vla'  # sanity: fixtures still line up
+
+
+# --- auto_open: the LLM dropped the open (field report, ~10 %) --------------------------
+
+# what the LLM sometimes streams for "냉장고 가서 오이 가져와": no open before the pick
+NO_OPEN = [('move_to', ['fridge']), ('pick', ['cucumber']), ('close', ['fridge_door']),
+           ('move_to', ['user']), ('handover', ['cucumber', 'user'])]
+
+
+def test_missing_open_after_move_to_is_inserted_with_its_say():
+    opened, reach = RW.between('move_to', ['fridge'], 'pick', ['cucumber'])
+    assert (opened.rule, opened.action, opened.args) == ('auto_open', 'open', ['fridge_door'])
+    assert opened.say == '냉장고 문을 엽니다.' and opened.exec == 'vla'
+    assert opened.title == '냉장고 문 열기'
+    # the demo rule then sees (open, pick) as if the LLM had written the open
+    assert (reach.action, reach.say) == ('approach', '')
+
+
+def test_take_out_names_its_place_even_as_the_first_line():
+    got = RW.between(None, None, 'take_out', ['cucumber', 'fridge'])
+    assert [(i.action, i.args) for i in got] == [('open', ['fridge_door']), ('approach', ['fridge'])]
+
+
+def test_no_insert_when_open_is_already_there_or_no_door():
+    assert [i.action for i in RW.between('open', ['fridge_door'], 'pick', ['cucumber'])] == ['approach']
+    assert RW.between('move_to', ['table'], 'pick', ['cucumber']) == []          # no door at the table
+    assert RW.between(None, None, 'pick', ['cucumber']) == []                    # place unknown
+    assert RW.between('move_to', ['fridge'], 'close', ['fridge_door']) == []     # not a take
+
+
+def test_other_door_gets_its_own_open():
+    [ins] = RW.between('open', ['fridge_door'], 'take_out', ['bowl', 'cupboard'])
+    assert (ins.action, ins.args, ins.say) == ('open', ['cupboard_door'], '찬장 문을 엽니다.')
+
+
+@pytest.mark.parametrize('auto, why', [
+    ({'doors': {'fridge': 'fridge_door'}, 'before': ['grab']}, 'known actions'),
+    ({'doors': {'fridge': 'fridge_door'}, 'before': []}, 'known actions'),
+    ({'doors': {'fridge': ''}, 'before': ['pick']}, 'place -> door'),
+])
+def test_malformed_auto_open_fails_at_load(auto, why):
+    with pytest.raises(rewrite.RewriteConfigError, match=why):
+        rewrite.Rewriter({'auto_open': auto}, CFG)
+
+
+def test_plan_without_open_runs_with_open_and_says_it():
+    h = Harness(rewriter=RW)
+    h.x.heard('p1', '냉장고 가서 오이 가져와')
+    h.plan('p1', NO_OPEN)
+    assert actions(h) == [(0, 'move_to'), (1, 'open'), (2, 'approach'), (3, 'pick'),
+                          (4, 'step_back'), (5, 'close'), (6, 'move_to'), (7, 'handover')]
+    assert h.x.count == 8
+    run_step(h, 'nav', 'p1', 0)
+    assert h.cmds[-1] == ('vla', 1, 'open', 'p1')
+    assert h.says[-1] == '냉장고 문을 엽니다.'             # the inserted open speaks
+    run_step(h, 'vla', 'p1', 1)
+    assert h.cmds[-1] == ('vla', 2, 'approach', 'p1') and h.says[-1] == '냉장고 문을 엽니다.'   # approach silent

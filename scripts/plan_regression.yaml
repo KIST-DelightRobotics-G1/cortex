@@ -1,0 +1,247 @@
+# plan_regression.yaml — utterances for scripts/plan_regression.py
+#
+# R: field report (2026-10) — "냉장고 가서 오이 집어 와/가져와" dropped the open about 1 in 10.
+# A–H: the v2 open-vocabulary set the production prompt was measured on
+#      (llm-router-test plan/v2/utterances.yaml, copied unchanged below).
+#
+# v2 테스트 발화 74개 — 열린 어휘·동사 20개·위치 규칙.
+#
+# expect 항목 (여러 개면 하나만 맞아도 통과):
+#   {seq: [[verb, arg, ...], ...]}           동사 열이 정확히 일치 (strict). 인자 'a|b' 는 택일, '*' 는 무엇이든
+#   {seq: [...], loose: true}                 seq 는 순서대로 포함되어야 하고, 그 밖의 줄은 move_to/open/close 만 허용
+#   {reply: chat|none|confirm}
+#   {infeasible: true, seq: [...], loose: true}  LLM 은 계획을 내야 하고(none 이면 실패), 검증기2 가 중단해야 함
+#   {manual: true}                            자동 채점 불가 — 사람이 표에서 판단
+# state: idle | running:<action> | awaiting_confirm:<요약>
+#
+# 위치 규칙 (프롬프트): 발화에 물건의 위치가 없으면 물건은 손 닿는 곳 → move_to 없음.
+#   물건의 위치가 언급되면(…에서, …에 있는) 그곳으로 move_to 후 조작. 놓거나 넣을 목적지(…에)는 위치 언급이 아님.
+#   닫힌 용기(냉장고·서랍·찬장)는 open → 동작 → close.
+
+utterances:
+  # ---------------- R 현장 보고: 이동 뒤 open 누락 ----------------
+  - {id: R1,  cat: R, text: "냉장고 가서 오이 집어 와",
+     expect: [{seq: [[move_to, fridge], [open, fridge_door|fridge], [take_out|pick, cucumber, fridge|*], [close, fridge_door|fridge], [move_to, user], [handover, cucumber, user]]},
+              {seq: [[move_to, fridge], [open, fridge_door|fridge], [pick, cucumber], [close, fridge_door|fridge], [move_to, user], [handover, cucumber, user]]}]}
+  - {id: R2,  cat: R, text: "냉장고 가서 오이 가져와",
+     expect: [{seq: [[move_to, fridge], [open, fridge_door|fridge], [take_out|pick, cucumber, fridge|*], [close, fridge_door|fridge], [move_to, user], [handover, cucumber, user]]},
+              {seq: [[move_to, fridge], [open, fridge_door|fridge], [pick, cucumber], [close, fridge_door|fridge], [move_to, user], [handover, cucumber, user]]}]}
+  - {id: R3,  cat: R, text: "냉장고로 가서 오이 가져와",
+     expect: [{seq: [[move_to, fridge], [open, fridge_door|fridge], [take_out|pick, cucumber, fridge|*], [close, fridge_door|fridge], [move_to, user], [handover, cucumber, user]]},
+              {seq: [[move_to, fridge], [open, fridge_door|fridge], [pick, cucumber], [close, fridge_door|fridge], [move_to, user], [handover, cucumber, user]]}]}
+  - {id: R4,  cat: R, text: "냉장고 가서 오이 집어와 줘",
+     expect: [{seq: [[move_to, fridge], [open, fridge_door|fridge], [take_out|pick, cucumber, fridge|*], [close, fridge_door|fridge], [move_to, user], [handover, cucumber, user]]},
+              {seq: [[move_to, fridge], [open, fridge_door|fridge], [pick, cucumber], [close, fridge_door|fridge], [move_to, user], [handover, cucumber, user]]}]}
+  - {id: R5,  cat: R, text: "냉장고 가서 오이 좀 가져다 줄래",
+     expect: [{seq: [[move_to, fridge], [open, fridge_door|fridge], [take_out|pick, cucumber, fridge|*], [close, fridge_door|fridge], [move_to, user], [handover, cucumber, user]]},
+              {seq: [[move_to, fridge], [open, fridge_door|fridge], [pick, cucumber], [close, fridge_door|fridge], [move_to, user], [handover, cucumber, user]]}]}
+
+  # ---------------- A 회귀 (시연 과제, 새 위치 규칙 적용) ----------------
+  - {id: A1,  cat: A, text: "냉장고에서 오이 하나 가져다줘",
+     expect: [{seq: [[move_to, fridge], [open, fridge_door|fridge], [take_out|pick, cucumber, fridge], [close, fridge_door|fridge], [move_to, user], [handover, cucumber, user]]},
+              {seq: [[move_to, fridge], [open, fridge_door|fridge], [pick, cucumber], [close, fridge_door|fridge], [move_to, user], [handover, cucumber, user]]}]}
+  - {id: A2,  cat: A, text: "G1, 냉장고에서 오이 하나 가져다주시겠어요?",
+     expect: [{seq: [[move_to, fridge], [open, fridge_door|fridge], [take_out|pick, cucumber, fridge], [close, fridge_door|fridge], [move_to, user], [handover, cucumber, user]]},
+              {seq: [[move_to, fridge], [open, fridge_door|fridge], [pick, cucumber], [close, fridge_door|fridge], [move_to, user], [handover, cucumber, user]]}]}
+  - {id: A3,  cat: A, text: "오이 테이블에 놓아 줘", note: "오이는 근처(at=home), 테이블은 다른 곳",
+     expect: [{seq: [[pick, cucumber], [move_to, table], [place, cucumber, table]]}]}
+  - {id: A4,  cat: A, text: "냉장고에 있는 오이 테이블에 놓아줘",
+     expect: [{seq: [[move_to, fridge], [open, fridge_door|fridge], [take_out|pick, cucumber, fridge], [close, fridge_door|fridge], [move_to, table], [place, cucumber, table]]},
+              {seq: [[move_to, fridge], [open, fridge_door|fridge], [pick, cucumber], [close, fridge_door|fridge], [move_to, table], [place, cucumber, table]]}]}
+  - {id: A5,  cat: A, text: "트레이 가져다줘",
+     expect: [{seq: [[pick, tray], [move_to, user], [handover, tray, user]]}]}
+  - {id: A6,  cat: A, text: "조리대로 가", expect: [{seq: [[move_to, counter]]}]}
+  - {id: A7,  cat: A, text: "냉장고 문 열어", note: "가구가 대상 → 이동 포함",
+     expect: [{seq: [[move_to, fridge], [open, fridge_door|fridge]]}, {seq: [[open, fridge_door|fridge]]}]}
+  - {id: A8,  cat: A, text: "원위치로 돌아가", note: "at=home 이므로 chat 도 규칙대로",
+     expect: [{seq: [[move_to, home]]}, {reply: chat}]}   # home_position 등은 aliases 로 정규화
+  - {id: A9,  cat: A, text: "나한테 와", expect: [{seq: [[move_to, user]]}]}
+  - {id: A10, cat: A, text: "오이 집어", expect: [{seq: [[pick, cucumber]]}]}
+  - {id: A11, cat: A, text: "냉장고 문 닫아줘",
+     expect: [{seq: [[move_to, fridge], [close, fridge_door|fridge]]}, {seq: [[close, fridge_door|fridge]]}]}
+  - {id: A12, cat: A, text: "오이 나한테 줘",
+     expect: [{seq: [[pick, cucumber], [move_to, user], [handover, cucumber, user]]}]}
+
+  # ---------------- B 새 동사 (13개 × 2) ----------------
+  - {id: B1,  cat: B, text: "서랍에서 숟가락 꺼내줘",
+     expect: [{loose: true, seq: [[take_out, spoon, drawer]]}]}
+  - {id: B2,  cat: B, text: "냉장고에서 우유 꺼내서 테이블에 놔",
+     expect: [{loose: true, seq: [[take_out|pick, milk, '*'], [move_to, table], [place, milk, table]]},
+              {loose: true, seq: [[pick, milk], [move_to, table], [place, milk, table]]}]}
+  - {id: B3,  cat: B, text: "이 사과 냉장고에 넣어", note: "사과는 근처, 냉장고로는 이동",
+     expect: [{loose: true, seq: [[pick, apple], [move_to, fridge], [put_in, apple, fridge]]}]}
+  - {id: B4,  cat: B, text: "쓰레기 쓰레기통에 넣어줘",
+     expect: [{loose: true, seq: [[pick, trash|garbage], [put_in, trash|garbage, trash_can|trash_bin|bin]]}]}
+  - {id: B5,  cat: B, text: "이거 받아",
+     expect: [{loose: true, seq: [[receive, '*', user]]}, {reply: confirm}]}
+  - {id: B6,  cat: B, text: "내가 주는 컵 받아줘",
+     expect: [{loose: true, seq: [[receive, cup, user]]}]}
+  - {id: B7,  cat: B, text: "열쇠 자물쇠에 꽂아",
+     expect: [{loose: true, seq: [[insert, key, lock|padlock|keyhole]]}, {loose: true, seq: [[pick, key], [insert, key, lock|padlock|keyhole]]}]}
+  - {id: B8,  cat: B, text: "플러그 콘센트에 꽂아줘",
+     expect: [{loose: true, seq: [[insert, plug, outlet|socket|power_outlet]]}, {loose: true, seq: [[pick, plug], [insert, plug, outlet|socket|power_outlet]]}]}
+  - {id: B9,  cat: B, text: "콘센트에서 플러그 뽑아",
+     expect: [{loose: true, seq: [[remove, plug, outlet|socket|power_outlet]]}]}
+  - {id: B10, cat: B, text: "병뚜껑 좀 빼줘",
+     expect: [{loose: true, seq: [[remove, cap|bottle_cap|lid, bottle]]}, {loose: true, seq: [[open, bottle|bottle_cap]]}]}
+  - {id: B11, cat: B, text: "TV 켜줘", expect: [{seq: [[turn_on, tv|television]]}]}
+  - {id: B12, cat: B, text: "불 좀 켜", expect: [{seq: [[turn_on, light|lamp|lights]]}]}
+  - {id: B13, cat: B, text: "선풍기 꺼", expect: [{seq: [[turn_off, fan]]}]}
+  - {id: B14, cat: B, text: "TV 꺼줘", expect: [{seq: [[turn_off, tv|television]]}]}
+  - {id: B15, cat: B, text: "에어컨 온도 좀 낮춰",
+     expect: [{seq: [[adjust, air_conditioner|ac|aircon|air_conditioner_temperature, '*']]}]}
+  - {id: B16, cat: B, text: "소리 좀 줄여줘", expect: [{seq: [[adjust, '*', '*']]}]}
+  - {id: B17, cat: B, text: "컵에 물 좀 따라줘",
+     expect: [{loose: true, seq: [[pour, water|water_bottle|bottle|pitcher|kettle|jug, cup]]}, {loose: true, seq: [[fill, cup, water]]}]}
+  - {id: B18, cat: B, text: "주전자 물 컵에 부어",
+     expect: [{loose: true, seq: [[pour, kettle, cup]]}]}
+  - {id: B19, cat: B, text: "물병 채워줘",
+     expect: [{loose: true, seq: [[fill, water_bottle|bottle, water]]}]}
+  - {id: B20, cat: B, text: "컵에 물 채워", expect: [{loose: true, seq: [[fill, cup, water]]}]}
+  - {id: B21, cat: B, text: "쓰레기통 비워줘", expect: [{loose: true, seq: [[empty, trash_can|trash_bin|bin]]}]}
+  - {id: B22, cat: B, text: "컵 비워", expect: [{loose: true, seq: [[empty, cup]]}]}
+  - {id: B23, cat: B, text: "식탁 좀 닦아줘",
+     expect: [{loose: true, seq: [[wipe, table|dining_table]]}]}
+  - {id: B24, cat: B, text: "창문 닦아", expect: [{loose: true, seq: [[wipe, window]]}]}
+  - {id: B25, cat: B, text: "현관문 잠가", expect: [{loose: true, seq: [[lock, front_door|door]]}]}
+  - {id: B26, cat: B, text: "문 잠금 풀어줘", expect: [{loose: true, seq: [[unlock, door|front_door]]}]}
+
+  # ---------------- C 위치 유무 쌍 ----------------
+  - {id: C1,  cat: C, text: "오이 집어서 냉장고에 넣어",
+     expect: [{seq: [[pick, cucumber], [move_to, fridge], [open, fridge_door|fridge], [put_in, cucumber, fridge], [close, fridge_door|fridge]]}]}
+  - {id: C2,  cat: C, text: "냉장고에서 오이 꺼내서 테이블에 놓아",
+     expect: [{seq: [[move_to, fridge], [open, fridge_door|fridge], [take_out|pick, cucumber, fridge], [close, fridge_door|fridge], [move_to, table], [place, cucumber, table]]},
+              {seq: [[move_to, fridge], [open, fridge_door|fridge], [pick, cucumber], [close, fridge_door|fridge], [move_to, table], [place, cucumber, table]]}]}
+  - {id: C3,  cat: C, text: "컵 가져와", expect: [{seq: [[pick, cup], [move_to, user], [handover, cup, user]]}]}
+  - {id: C4,  cat: C, text: "부엌에 있는 컵 가져와",
+     expect: [{seq: [[move_to, kitchen], [pick, cup], [move_to, user], [handover, cup, user]]}]}
+  - {id: C5,  cat: C, text: "리모컨 테이블에 놔",
+     expect: [{seq: [[pick, remote_control|remote], [move_to, table], [place, remote_control|remote, table]]}]}
+  - {id: C6,  cat: C, text: "소파에 있는 리모컨 테이블에 놔",
+     expect: [{seq: [[move_to, sofa|couch], [pick, remote_control|remote], [move_to, table], [place, remote_control|remote, table]]}]}
+  - {id: C7,  cat: C, text: "불 꺼", expect: [{seq: [[turn_off, light|lamp|lights]]}]}
+  - {id: C8,  cat: C, text: "거실 불 꺼",
+     expect: [{seq: [[move_to, living_room], [turn_off, light|lamp|lights|living_room_light]]}]}
+  - {id: C9,  cat: C, text: "문 닫아", expect: [{seq: [[close, door]]}, {seq: [[move_to, door], [close, door]]}]}
+  - {id: C10, cat: C, text: "방문 닫고 와",
+     expect: [{loose: true, seq: [[close, door|room_door|bedroom_door], [move_to, user|home]]}]}
+  - {id: C11, cat: C, text: "물 좀 줘",
+     note: "위치 미지정. 부엌 등으로 먼저 이동하는 열도 인정(상식 추론)",
+     expect: [{loose: true, seq: [[pick, water|water_bottle|bottle|cup|glass], [move_to, user], [handover, water|water_bottle|bottle|cup|glass, user]]}]}
+  - {id: C12, cat: C, text: "냉장고에서 물 좀 줘",
+     expect: [{loose: true, seq: [[move_to, fridge], [take_out|pick, water|water_bottle|bottle, '*'], [move_to, user], [handover, water|water_bottle|bottle, user]]},
+              {loose: true, seq: [[move_to, fridge], [pick, water|water_bottle|bottle], [move_to, user], [handover, water|water_bottle|bottle, user]]}]}
+
+  # ---------------- D 복합 ----------------
+  - {id: D1,  cat: D, text: "불 끄고 문 닫아",
+     expect: [{loose: true, seq: [[turn_off, light|lamp|lights], [close, door]]}]}
+  - {id: D2,  cat: D, text: "창문 닫고 커튼 쳐",
+     expect: [{loose: true, seq: [[close, window], [close, curtain|curtains]]}]}
+  - {id: D3,  cat: D, text: "컵에 물 채워서 나한테 줘",
+     expect: [{loose: true, seq: [[fill, cup, water], [move_to, user], [handover, cup, user]]}]}
+  - {id: D4,  cat: D, text: "사과 두 개 가져와", manual: true,
+     expect: [{loose: true, seq: [[pick, apple|apples], [move_to, user], [handover, apple|apples, user]]}]}
+  - {id: D5,  cat: D, text: "TV 켜고 소리 줄여",
+     expect: [{loose: true, seq: [[turn_on, tv|television], [adjust, tv|television|volume|tv_volume, '*']]}]}
+  - {id: D6,  cat: D, text: "서랍 열어서 열쇠 꺼내고 문 잠가",
+     expect: [{loose: true, seq: [[open, drawer], [take_out, key, drawer], [lock, door|front_door]]},
+              {loose: true, seq: [[open, drawer], [take_out, key, drawer], [insert, key, door_lock|lock|keyhole|door], [lock, door|front_door]]}]}
+  - {id: D7,  cat: D, text: "쓰레기 버리고 식탁 닦아",
+     expect: [{loose: true, seq: [[put_in, trash|garbage, trash_can|trash_bin|bin], [wipe, table|dining_table]]}]}
+  - {id: D8,  cat: D, text: "테이블 닦고 컵 올려놔",
+     expect: [{loose: true, seq: [[wipe, table], [pick, cup], [place, cup, table]]}]}
+  - {id: D9,  cat: D, text: "냉장고 열어서 뭐 있는지 보고 와", manual: true,
+     expect: [{reply: none}, {reply: confirm}, {loose: true, seq: [[move_to, fridge], [open, fridge_door|fridge]]}]}
+  - {id: D10, cat: D, text: "물 따라주고 TV 켜줘",
+     expect: [{loose: true, seq: [[pour|fill, '*', '*'], [turn_on, tv|television]]}, {loose: true, seq: [[pour|fill, '*', '*'], [move_to, user], [handover, '*', user], [turn_on, tv|television]]}]}
+
+  # ---------------- E1 LLM none (동사 20개로 표현 불가) ----------------
+  - {id: E1,  cat: E1, text: "노래 한 곡 불러줘", expect: [{reply: none}]}
+  - {id: E2,  cat: E1, text: "빨래 개줘",         expect: [{reply: none}]}
+  - {id: E3,  cat: E1, text: "춤 좀 춰봐",         expect: [{reply: none}]}
+  - {id: E4,  cat: E1, text: "사진 찍어줘",        expect: [{reply: none}]}
+  # ---------------- E2 검증기 중단 (LLM 은 분해, capabilities 밖 장소) ----------------
+  - {id: E5,  cat: E2, text: "화장실로 가",            expect: [{infeasible: true, loose: true, seq: [[move_to, bathroom|toilet|restroom]]}]}
+  - {id: E6,  cat: E2, text: "옥상에 올라가",          expect: [{infeasible: true, loose: true, seq: [[move_to, rooftop|roof]]}]}
+  - {id: E7,  cat: E2, text: "차고 문 열어줘",         expect: [{infeasible: true, loose: true, seq: [[move_to, garage], [open, garage_door]]}, {infeasible: true, loose: true, seq: [[open, garage_door]]}]}
+  - {id: E8,  cat: E2, text: "침실에 있는 베개 가져와", expect: [{infeasible: true, loose: true, seq: [[move_to, bedroom], [pick, pillow], [move_to, user], [handover, pillow, user]]}]}
+  - {id: E9,  cat: E2, text: "오리 가져다줘", note: "STT 오인식. 열린 어휘에서 LLM 은 분해하고 objects 목록이 막는다",
+     expect: [{infeasible: true, loose: true, seq: [[pick, duck], [move_to, user], [handover, duck, user]]}, {reply: confirm}]}
+  # ---------------- E3 되묻기 ----------------
+  - {id: E10, cat: E3, text: "그거 좀 줘",    expect: [{reply: confirm}]}
+
+  # ---------------- F 잡담·상태 ----------------
+  - {id: F1, cat: F, text: "안녕",              expect: [{reply: chat}]}
+  - {id: F2, cat: F, text: "고마워",            expect: [{reply: chat}]}
+  - {id: F3, cat: F, text: "잘하고 있어", state: "running:move_to", expect: [{reply: chat}]}
+  - {id: F4, cat: F, text: "응 오이 맞아", state: "awaiting_confirm:오리 가져다줘 → 오이 말씀이신가요?",
+     note: "냉장고까지 가는 열도 인정(상식 추론)",
+     expect: [{loose: true, seq: [[pick|take_out, cucumber, '*'], [move_to, user], [handover, cucumber, user]]},
+              {loose: true, seq: [[pick, cucumber], [move_to, user], [handover, cucumber, user]]}]}
+
+  # ---------------- E2 추가 (과잉 거절 판정용) ----------------
+  - {id: E11, cat: E2, text: "지하실로 가", expect: [{infeasible: true, loose: true, seq: [[move_to, basement|cellar]]}]}
+  - {id: E12, cat: E2, text: "베란다 문 열어줘", expect: [{infeasible: true, loose: true, seq: [[open, balcony_door|veranda_door]]}, {infeasible: true, loose: true, seq: [[move_to, balcony|veranda], [open, balcony_door|veranda_door]]}]}
+  - {id: E13, cat: E2, text: "드라이버 가져와", expect: [{infeasible: true, loose: true, seq: [[pick, screwdriver], [move_to, user], [handover, screwdriver, user]]}]}
+  - {id: E14, cat: E2, text: "수건 좀 접어서 갖다줘", expect: [{reply: none}, {infeasible: true, loose: true, seq: [[pick, towel], [move_to, user], [handover, towel, user]]}]}
+  - {id: E15, cat: E2, text: "고양이 밥 줘", expect: [{infeasible: true, loose: true, seq: [[fill|pour, '*', '*']]}, {infeasible: true, loose: true, seq: [[pick, cat_food|food], [put_in, cat_food|food, cat_bowl|bowl]]}, {reply: confirm}]}
+
+  # ---------------- G 연속 발화 (at / holding) ----------------
+  - {id: G1,  cat: G, at: fridge, text: "오이 집어", expect: [{seq: [[pick, cucumber]]}]}
+  - {id: G2,  cat: G, at: fridge, holding: cucumber, text: "테이블에 놔",
+     expect: [{seq: [[move_to, table], [place, cucumber, table]]}]}
+  - {id: G3,  cat: G, at: user, holding: cucumber, text: "이거 줘",
+     expect: [{seq: [[handover, cucumber, user]]}]}
+  - {id: G4,  cat: G, at: table, text: "여기 닦아", expect: [{seq: [[wipe, table]]}]}
+  - {id: G5,  cat: G, at: home, text: "테이블에 놔", expect: [{reply: confirm}]}
+  - {id: G6,  cat: G, at: counter, holding: tray, text: "냉장고에 넣어",
+     expect: [{loose: true, seq: [[move_to, fridge], [put_in, tray, fridge]]}]}
+  - {id: G7,  cat: G, at: fridge, holding: unknown, text: "오이 테이블에 놔", note: "냉장고 앞이므로 take_out 도 맞다",
+     expect: [{loose: true, seq: [[pick|take_out, cucumber, '*'], [move_to, table], [place, cucumber, table]]},
+              {loose: true, seq: [[pick, cucumber], [move_to, table], [place, cucumber, table]]}]}
+  - {id: G8,  cat: G, at: table, text: "테이블로 가", expect: [{reply: chat}]}
+  - {id: G9,  cat: G, at: home, state: "running:move_to", text: "아니 그만두고 불 꺼",
+     expect: [{seq: [[turn_off, light|lamp|lights]]}]}
+  - {id: G10, cat: G, at: kitchen, holding: cup, text: "물 채워서 나한테 줘",
+     expect: [{loose: true, seq: [[fill, cup, water], [move_to, user], [handover, cup, user]]}]}
+  - {id: G11, cat: G, at: unknown, text: "오이 집어",
+     expect: [{loose: true, seq: [[move_to, fridge], [pick, cucumber]]}, {loose: true, seq: [[pick, cucumber]]}]}
+  - {id: G12, cat: G, at: fridge, holding: unknown, text: "냉장고 문 닫아", expect: [{seq: [[close, fridge_door|fridge]]}]}
+  - {id: G13, cat: G, at: table, holding: cucumber, text: "다시 냉장고에 넣어",
+     expect: [{loose: true, seq: [[move_to, fridge], [open, fridge_door|fridge], [put_in, cucumber, fridge], [close, fridge_door|fridge]]}]}
+
+  # ---------------- H 이동 판단 (station 5개: home/fridge/table/counter/user) ----------------
+  # moves: 기대하는 move_to 목적지 (순서대로). 이동 누락·과다를 총점과 분리해 센다.
+  - {id: H1,  cat: H, text: "사과 냉장고에 넣어", moves: [fridge],
+     expect: [{loose: true, seq: [[pick, apple], [move_to, fridge], [put_in, apple, fridge]]}]}
+  - {id: H2,  cat: H, text: "컵 테이블에 놔", moves: [table],
+     expect: [{seq: [[pick, cup], [move_to, table], [place, cup, table]]}]}
+  - {id: H3,  cat: H, text: "컵 조리대에 올려", moves: [counter],
+     expect: [{seq: [[pick, cup], [move_to, counter], [place, cup, counter]]}]}
+  - {id: H4,  cat: H, text: "냉장고에서 우유 꺼내줘", moves: [fridge],
+     expect: [{loose: true, seq: [[move_to, fridge], [take_out|pick, milk, '*']]},
+              {loose: true, seq: [[move_to, fridge], [pick, milk]]}]}
+  - {id: H5,  cat: H, text: "테이블에서 컵 가져와", moves: [table, user],
+     expect: [{loose: true, seq: [[move_to, table], [pick, cup], [move_to, user], [handover, cup, user]]}]}
+  - {id: H6,  cat: H, text: "문 열어", moves: [],
+     expect: [{seq: [[open, door]]}]}
+  - {id: H7,  cat: H, text: "서랍 열어", moves: [],
+     expect: [{seq: [[open, drawer]]}]}
+  - {id: H8,  cat: H, text: "창문 닫아", moves: [],
+     expect: [{seq: [[close, window]]}]}
+  - {id: H9,  cat: H, text: "사과 집어", moves: [],
+     expect: [{seq: [[pick, apple]]}]}
+  - {id: H10, cat: H, text: "불 켜", moves: [],
+     expect: [{seq: [[turn_on, light|lamp|lights]]}]}
+  - {id: H11, cat: H, at: fridge, text: "냉장고 문 열어", moves: [],
+     expect: [{seq: [[open, fridge_door|fridge]]}]}
+  - {id: H12, cat: H, at: fridge, holding: apple, text: "냉장고에 넣어", moves: [],
+     expect: [{loose: true, seq: [[put_in, apple, fridge]]}]}
+  - {id: H13, cat: H, text: "화장실로 가", moves: [bathroom],
+     expect: [{infeasible: true, loose: true, seq: [[move_to, bathroom|restroom|toilet]]}]}
+  - {id: H14, cat: H, text: "부엌에 있는 컵 가져와", moves: [kitchen, user],
+     expect: [{infeasible: true, loose: true, seq: [[move_to, kitchen], [pick, cup], [move_to, user], [handover, cup, user]]}]}
+  - {id: H15, cat: H, text: "사과 나한테 줘", moves: [user],
+     expect: [{seq: [[pick, apple], [move_to, user], [handover, apple, user]]}]}
+  - {id: H16, cat: H, text: "나한테 와", moves: [user],
+     expect: [{seq: [[move_to, user]]}]}
