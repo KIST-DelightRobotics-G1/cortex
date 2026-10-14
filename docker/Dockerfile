@@ -23,6 +23,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-rmw-cyclonedds-cpp \
     ros-humble-ament-lint-auto \
     ros-humble-ament-lint-common \
+    ros-humble-ros2bag \
+    ros-humble-rosbag2-transport \
+    ros-humble-rosbag2-storage-default-plugins \
     python3-colcon-common-extensions \
     python3-pip \
     libgl1 libglib2.0-0 \

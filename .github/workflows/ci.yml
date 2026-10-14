@@ -70,7 +70,7 @@ jobs:
           # the python egg copy step fail). A miss costs a full rebuild (~3 min,
           # C++ still served by ccache); a stale hit costs a red build for the
           # wrong reason.
-          key: colcon-${{ matrix.ros_distro }}-${{ hashFiles('src/**/package.xml', 'src/**/CMakeLists.txt', 'src/**/*.py', 'src/**/*.msg', 'src/**/*.srv', 'src/**/*.yaml', 'src/**/*.json5') }}
+          key: colcon-${{ matrix.ros_distro }}-${{ hashFiles('src/**/package.xml', 'src/**/CMakeLists.txt', 'src/**/*.py', 'src/**/*.msg', 'src/**/*.srv', 'src/**/*.yaml', 'src/**/*.json5', 'scripts/collect_yolo_diagnostics.py') }}
 
       - name: Install build tooling
         shell: bash

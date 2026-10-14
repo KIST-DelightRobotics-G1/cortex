@@ -2,7 +2,7 @@
 
 대상 브랜치: `SYS-REQ-44-yolo-diagnostics`. 기존 모델·confidence·연속 프레임
 판정·CheckTarget 메시지·Subtask 실행 조건을 유지한다. 추가 토픽은 진단용이며
-로봇 제어에 사용하지 않는다. 기본 실행에서는 진단 기능이 꺼져 있다.
+로봇 제어에 사용하지 않는다. 표준 launch는 회차별 텍스트 로그와 진단 bag을 자동 저장한다.
 
 ## 1. 준비
 
@@ -27,50 +27,92 @@ CUDA가 없으면 GPU 검증을 진행하지 않는다. 필요한 경우 기존 
 브랜치만 변경해도 반영되지는 않는다. NVIDIA Container Toolkit과 `--gpus`가
 필요하며 컨테이너 안에서도 위 두 GPU 확인 명령을 실행한다.
 
-## 2. Cortex 진단 브랜치 실행
+## 2. Cortex 실행과 회차별 자동 저장
 
-이미 실행 중인 Cortex를 종료한 뒤 같은 ROS 환경에서 진단 버전을 실행한다.
+이미 실행 중인 Cortex를 종료한 뒤 같은 ROS 환경에서 실행한다.
 동일 이름의 detector/orchestrator를 동시에 두 개 실행하지 않는다.
 
 ```bash
 ros2 launch cortex_bringup cortex.launch.py \
-  model:=/models/cortex/yolo26s_fridge_cucumber_continued.pt device:=0 \
-  detector_profile:="$PWD/src/cortex_bringup/config/yolo_diagnostics.yaml"
+  model:=/models/cortex/yolo26s_fridge_cucumber_continued.pt device:=0
 ```
 
-현장 전체 설정을 쓰는 경우 `params_file:=/absolute/path/site.yaml`도 지정한다.
-기존에 detector_profile을 따로 사용했다면 해당 프로파일의 값을 site.yaml에
-반영한 뒤 위 진단 프로파일을 마지막에 적용한다. 이 진단 파일에는 모델이나
-판정 조건이 없으며 기존 설정을 덮어쓰지 않는다.
+기본값인 `record_session:=true`에서는 **launch 한 번을 실험 한 회차**로 기록한다.
+별도 수집 터미널이 필요하지 않다. detector/orchestrator의 진단 출력만 자동으로
+켜며, 모델·confidence·window·다수결 등 판정 조건은 바꾸지 않는다.
+현장 전체 설정은 `params_file:=/absolute/path/site.yaml`, 기존 프로파일은
+`detector_profile:=/absolute/path/profile.yaml`로 그대로 지정할 수 있다.
 
+사전조건 제한시간과 검출 기준은 현장 YAML의 기존 값을 따른다. 자동 기록은
+`precheck_timeout_s`, `precheck_retry_s`, `window_s`를 변경하지 않는다.
+실제 적용값은 회차 폴더의 파라미터 덤프에서 확인한다.
 모델 해시는 **실제 파일과 현장 설정이 일치해야 한다**. 표준 파일은
 `3d275b84378da06dc9202b4d40962f49f8d88d18062357d1d167abab10d6f920`이다.
 카메라와 nav/VLA 등 외부 모듈은 평소와 같이 별도로 실행한다.
-검출만 확인하려면 위 명령에 `detector_only:=true`를 추가한다.
+검출만 확인하려면 `detector_only:=true`를 추가한다.
 
-별도 터미널에서 동일하게 ROS와 install/setup.bash를 source한 뒤 기록한다.
-아래 도구는 기존 실행을 관찰하며 명령 발행·서비스 호출·파라미터 변경을 하지 않는다.
+시작 시 `Cortex session logs: ...`와 ROS launch의 로그 경로가 표시된다.
+기본 위치는 `~/.ros/log/<날짜-호스트-PID>/`이며, 실행 전에 `ROS_LOG_DIR`을
+지정하면 그 아래에 회차 폴더가 생성된다. 결과 구성은 다음과 같다.
+
+- `launch.log`: 이 launch가 시작한 전체 Cortex 노드의 stdout/stderr와 시작·종료 로그.
+- 노드별 ROS 로그: 같은 회차 폴더에 저장.
+- `diagnostics/bag/`: 카메라, 검출, YOLO/precheck 진단, STT 인식 문장,
+  LLM 요청·단계, TTS 요청·중단, nav/VLA 명령·상태, task_status, trace, rosout.
+- `diagnostics/detector_params.yaml`, `orchestrator_params.yaml`: 실행 중인 판정 설정.
+- `diagnostics/manifest.json`, `record.log`: 기록 상태, 토픽별 수집 수, 누락 토픽,
+  환경 확인 결과. 접근 가능한 모델 파일은 SHA-256도 기록한다.
+
+텍스트 로그는 노드 시작부터 남는다. bag 수집은 노드 파라미터 확인 후 시작하므로
+**시작 직후의 모든 토픽을 소급 저장하지는 않는다**. 노드 준비는 최대 45초간
+재시도하며, 준비 실패 시 manifest와 launch 로그에 수집 실패가 남는다.
+`diagnostics/record.log`에서 필요한 토픽의 구독이 시작됐는지 확인한 후 시험한다.
+기록 중 시험 조건과 성공/실패 시각을 메모한다. 정지 후 확인, 도착 직후 확인,
+화각 변화, 짧은 가림을 비교하고, 부재·영상 중단 시험은 detector-only에서 진행한다.
+
+종료는 기존처럼 **Ctrl+C 한 번 후 기록 종료까지 기다린다**. 수집기는 자신이
+시작한 rosbag만 종료하며 메타데이터가 저장될 시간을 준다. 수집 실패가 로봇
+명령이나 판정 결과를 바꾸지는 않는다. 강제 종료·디스크 부족·수집 실패 시
+부분 기록일 수 있으므로 `manifest.json`의 status, recorded_topic_counts,
+missing_topics를 확인한다. `recorded`도 모든 토픽의 무손실 저장을 의미하지 않는다.
+카메라가 0건이면 `incomplete_no_camera`로 표시한다. detector-only에서는
+orchestrator 관련 토픽이 없는 것이 정상이다. 외부 nav/VLA 프로세스의
+파일 로그까지 복사하는 기능은 아니며, 발행된 상태 토픽과 rosout을 함께 수집한다.
+
+Docker는 새 이미지와 로그 마운트가 적용된 컨테이너에서 실행한다.
+
+```bash
+CORTEX_LOG_DIR="$HOME/cortex-logs" docker/run.sh \
+  ros2 launch cortex_bringup cortex.launch.py
+```
+
+`CORTEX_LOG_DIR` 기본값은 호스트의 `~/.local/state/cortex/logs`이다.
+컨테이너 내부의 `/logs/cortex`에 연결되며, **호스트의 해당 회차 폴더 전체**를
+압축해 전달하면 된다. 기존 컨테이너의 마운트가 다르면 스크립트가 재사용을
+거부한다. 필요한 파일을 먼저 보존한 뒤 컨테이너를 명시적으로 재생성한다.
+스크립트가 기존 컨테이너를 자동 삭제하지는 않는다.
+
+영상 수집 부하를 제외하고 텍스트 로그만 저장하려면 `record_session:=false`를
+사용한다. 이 경우 진단 활성화 여부는 YAML을 따른다. 수동으로 90초만 수집하려면
+`record_session:=false`와 `yolo_diagnostics.yaml` 프로파일로 실행한 뒤 아래
+기존 도구를 사용한다. 자동 수집과 동시에 실행하지 않는다.
 
 ```bash
 python3 scripts/collect_yolo_diagnostics.py --duration 90 --output results/fridge-run01
 ```
 
-기록 중 기존 시험 절차로 냉장고 확인을 반복한다. 조건과 성공/실패 시각도
-별도로 메모한다. 정지 후 확인, 도착 직후 확인, 화각 변화, 짧은 가림,
-YOLO 단독/전체 실행을 각각 비교한다. 부재·영상 중단 시험은 detector-only에서
-진행한다. 파일 덮어쓰기를 막기 위해 결과 경로는 매번 새 이름을 사용한다.
-Docker에서 수집하면 결과 폴더를 호스트 볼륨에 두거나 종료 전에 복사한다.
-
-`manifest.json`의 recorded_topic_counts와 missing_topics를 확인한다.
-카메라가 저장되지 않으면 도구는 실패 코드로 종료한다. 진단 토픽이 비었다면
-진단 브랜치/프로파일 적용을 확인한다. detector-only에서는 orchestrator 관련
-토픽이 없는 것이 정상이다. rosbag 수집 자체도 부하가 있으므로 단독/통합
-비교에서는 같은 기록 조건을 유지한다.
+수동 수집도 ROS와 install/setup.bash를 source한 동일 환경에서 실행한다.
+자동 수집과 수동 수집 모두 명령 발행·서비스 판정 요청·파라미터 변경을 하지 않는다.
+rosbag은 영상 크기와 시험 시간에 따라 저장 공간과 부하를 사용한다. 단독/통합
+비교에서는 같은 기록 조건을 유지한다. 결과에는 발화 텍스트와 영상이 포함되므로
+공유 전 확인하며, .env·인증 파일·마이크 음성은 별도로 복사하지 않는다.
 
 ## 3. 로그와 영상을 읽기 쉬운 파일로 추출
 
 ROS를 source한 동일 환경에서 실행한다. 기본 H.264뿐 아니라 raw/compressed
 영상도 지원한다. 현장 카메라 토픽이 다르면 --camera-topic을 지정한다.
+아래는 수동 수집 경로 예시이며, 자동 저장분은 --bag에
+<회차 폴더>/diagnostics/bag 경로를 지정한다.
 
 ```bash
 python3 scripts/export_yolo_bag.py --bag results/fridge-run01/bag \
@@ -116,7 +158,7 @@ python3 scripts/diagnose_yolo.py \
 기존 기준의 박스·처리시간에 섞지 않는다. 현장 설정은 변경하지 않는다.
 `--source-delay-ms 400`은 가상 지연을 넣는 추가 실험이며 실측 지연이 아니다.
 
-저장 영상에서는 실제 DDS·CPU 경합·패킷 누락·시계 오차·실행기의 1초 재시도를
+저장 영상에서는 실제 DDS·CPU 경합·패킷 누락·시계 오차·실행기의 사전조건 재시도를
 재현하지 않는다. 판정은 추론 완료 시점 표본이며 Subtask 시작 성공률이 아니다.
 정답 라벨이 없으므로 결과의 allow 비율을 Precision/Recall이라고 해석하지 않는다.
 기존 test 영상으로 설정을 비교할 때는 탐색 분석이며 독립 일반화 검증이 아니다.
@@ -155,7 +197,8 @@ FPS 대체 여부를 기록하며, 모순된 시각은 오류로 종료한다.
 
 ## 6. 회신 자료
 
-수집 결과 폴더, 추출 결과 폴더, 독립 분석 결과 폴더와 시험 조건·성공/실패
+자동 저장한 회차 폴더 전체(launch.log와 diagnostics 포함), 추출 결과 폴더,
+독립 분석 결과 폴더와 시험 조건·성공/실패
 시각 메모를 함께 전달한다. 모델 파일은 기존 파일을 유지하고 해시로 확인한다.
 수집기는 .env·인증키·마이크 음성을 복사하지 않지만 trace/rosout에는 발화문이
 들어갈 수 있으므로 공유 전 확인한다. 결과 폴더에 ERROR.txt가 있거나

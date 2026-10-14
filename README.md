@@ -125,6 +125,12 @@ The full graph is **7 nodes**: `detector_node`, `stt_node`, `llm_node`,
 `orchestrator_node`, `tts_node`, `speaker_node`, `gui_bridge_node`. A missing one
 is a startup failure — check it with `ros2 node list`.
 
+Standard bringup automatically saves each launch run under the ROS log directory
+(default `~/.ros/log`): all Cortex process output plus a passive camera/event/YOLO
+diagnostic bag. Stop with Ctrl+C and wait for the recorder to finish. Use
+`record_session:=false` for text logs only. See [field diagnostics](docs/yolo_diagnostics.md)
+for output files, collection status and sharing a run.
+
 Parameters (topics, tick rate, cancel timeout) live in
 `src/cortex_bringup/config/cortex_params.yaml`.
 
@@ -155,6 +161,8 @@ CORTEX_GPUS=none docker/run.sh ros2 launch cortex_bringup llm_demo.launch.py bac
   CycloneDDS binds to is `CORTEX_NIC` (default `eno2`, must match the host). Without the robot
   attached `eno2` is DOWN and nothing starts — use `CORTEX_NIC=lo docker/run.sh …`.
 - The TTS cache lives on the host (`~/.cache/cortex_tts`) and survives rebuilds.
+- Session logs persist at `CORTEX_LOG_DIR` (default `~/.local/state/cortex/logs`),
+  mounted at `/logs/cortex`. Recreate legacy containers to add this mount.
 - The image includes CUDA 12.6 PyTorch and Ultralytics. run.sh exposes GPUs and mounts
   `~/models/cortex` read-only at `/models/cortex`; weights stay external.
 - Use `CORTEX_GPUS=none` for CPU/demo and `device:=cpu` for real CPU inference.
@@ -162,7 +170,8 @@ CORTEX_GPUS=none docker/run.sh ros2 launch cortex_bringup llm_demo.launch.py bac
 - See [standard YOLO deployment](docs/yolo_deployment.md) for model paths, GPU setup
   and full site YAML overrides.
 - Env file, mounts and DDS settings are fixed when the container is created — after
-  changing them, `docker rm -f kist-cortex` and run again.
+  changing them, preserve needed container files, then stop and recreate the container.
+  The runtime script refuses incompatible containers without deleting them.
 
 ---
 
