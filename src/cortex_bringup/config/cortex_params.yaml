@@ -99,6 +99,7 @@ orchestrator_node:
     # Real robot precheck: missing or unavailable evidence blocks dispatch.
     detector_fail_open: false
     precheck_timeout_s: 1.0
+    say_on_done: true                   # speak actions.yaml done_say when a step finishes (last: plan_done)
     precheck_retry_s: 0.1
     tts_prefetch_topic: /cortex/tts/prefetch
     tts_warmup_topic: /cortex/tts/warmup
