@@ -116,7 +116,7 @@ class PresenceWindow:
             self._last_stamp, self._ever_frame, self._fault = stamp_ns, True, ''
             return True
 
-    def check(self, target, now, min_confidence=0., max_age_s=0., *, diagnostics=None):
+    def check(self, target, now, min_confidence=0., max_age_s=0., *, diagnostics=None, frame_evidence=None):
         # Observe the very same locked decision; never put diagnostic reasons on the wire.
         if diagnostics is not None:
             diagnostics.update(window_s=self.window_s, min_frames=self.min_frames,
@@ -156,6 +156,14 @@ class PresenceWindow:
                 diagnostics.update(
                     max_candidate_confidence=max(candidates, default=None),
                     latest_frame_age_ms=round(1000*(now-frames[-1][0]), 1))
+            if frame_evidence is not None:
+                threshold = min_confidence or self.min_confidence
+                for observed_t, stamp, best in frames:
+                    candidate = max((best[label].confidence for label in labels if label in best), default=None)
+                    frame_evidence.append(dict(source_stamp_ns=stamp,
+                                               age_ms=round(1000*(now-observed_t), 1),
+                                               max_candidate_confidence=candidate,
+                                               hit=candidate is not None and candidate >= threshold))
             if len(frames) < self.min_frames:
                 return finish(Verdict(detail='insufficient_frames', samples=len(frames)))
             conf = min_confidence or self.min_confidence

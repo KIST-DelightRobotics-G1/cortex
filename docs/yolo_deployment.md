@@ -125,7 +125,7 @@ are outside this deployment update; see the handoff notes before robot operation
 The `SYS-REQ-44-yolo-console-diagnostics` branch adds INFO messages to the existing
 node loggers. Use the standard launch command after building this branch (rebuild
 the image when using Docker). No separate collector, bag, video writer, new topic,
-or message/service definition is added. Presence thresholds, retries and executor
+or message/service definition is added. Optional detailed JSONL files are described below. Presence thresholds, retries and executor
 transitions are unchanged from main, including its **1.0 s** precheck timeout.
 
 The standard YAML enables the logs. Add the following keys to a custom site YAML
@@ -214,3 +214,89 @@ Keep the actual site/model/device launch arguments if used. Pass the complete
 file (startup through shutdown) and trial conditions, including the time of the
 failed instruction. Use a new filename for each run. The file can contain
 transcribed speech. Docker users should copy it out before discarding the container.
+
+## Optional detailed JSONL recording
+
+Keep console diagnostics enabled as above. To additionally record detailed YOLO
+evidence, merge these parameters into the existing detector section and restart
+the rebuilt node/image:
+
+```yaml
+detector_node:
+  ros__parameters:
+    diagnostics_jsonl_enabled: true
+    diagnostics_jsonl_dir: ''              # resolve from ROS log directory
+    diagnostics_jsonl_max_bytes: 10485760   # 10 MiB per file
+    diagnostics_jsonl_backup_count: 4      # current file plus four backups
+```
+
+Recording is **off by default** and independent of `diagnostics_log_enabled`.
+With recording off, no recording directory, file or writer thread is created.
+Parameters are read at startup; changing a running parameter is not a toggle.
+
+An empty directory uses the first available location:
+
+1. `$ROS_LOG_DIR/yolo_diagnostics`
+2. `$ROS_HOME/log/yolo_diagnostics`
+3. `~/.ros/log/yolo_diagnostics`
+
+Each node start creates a unique UTC-date/PID/random-suffix subdirectory containing
+`events.jsonl`. For example, a root Docker process without overrides writes under
+`/root/.ros/log/yolo_diagnostics/<run>/events.jsonl`. The exact path appears once
+in the console as `YOLO_JSONL path=...`. Set `diagnostics_jsonl_dir` to an absolute
+directory such as `/logs/yolo_diagnostics` to select another location. In Docker,
+that path is **inside the container**: bind-mount the host destination there, or
+copy out the complete run directory before removing the container.
+
+One UTF-8 JSON object is written per line. Each has `schema_version: 1`,
+`session_id`, a per-process `sequence`, Unix `wall_time_ns`, `monotonic_ns`,
+`dropped_total`, `event` and `data`. Node events put `ros_time_ns` in `data`.
+Use source stamps to join image evidence, ROS timestamps to compare node logs,
+and monotonic time for elapsed durations on the same host.
+
+Recorded events:
+
+- `YOLO_CONFIG`, `YOLO_STATUS`, `YOLO_CHECK`: existing detector diagnostics.
+  Each check additionally records `frames`, with source stamp, age, maximum
+  retained candidate confidence and threshold hit for every frame actually
+  considered by the locked presence window. An empty list means no frame
+  evidence was available; an early failure such as insufficient frames still
+  retains available per-frame evidence without claiming a valid verdict.
+- `FRAME_ACCEPTED`: effective/original source stamp, camera frame ID, dimensions
+  and source age. Acceptance does not guarantee inference: the existing detector
+  samples the latest image at its configured rate.
+- `FRAME_REJECTED`, `INPUT_NO_FRAME`: reason and source/packet stamp for stale,
+  invalid or out-of-order input and decoder cases. An H.264 packet with no output
+  may be normal codec buffering; it is not by itself a bad frame.
+- `INFERENCE_RESULT`: source stamp, dimensions, inference duration, source age at
+  completion, `window_added` and every retained detection. Box fields
+  `cx/cy/w/h` are normalized image coordinates, not pixels.
+- `INFERENCE_SKIPPED`, `INFERENCE_ERROR`: source stamp and skip/error detail.
+
+Example shape (illustrative, abbreviated):
+
+```json
+{"schema_version":1,"event":"YOLO_CHECK","data":{"ros_time_ns":1791940957000000000,"target":"cucumber","found":false,"reason":"latest_miss","samples":3,"hits":2,"latest_hit":false,"frames":[{"source_stamp_ns":1791940956700000000,"age_ms":300.0,"max_candidate_confidence":0.8,"hit":true},{"source_stamp_ns":1791940956825000000,"age_ms":175.0,"max_candidate_confidence":0.9,"hit":true},{"source_stamp_ns":1791940956950000000,"age_ms":50.0,"max_candidate_confidence":null,"hit":false}]}}
+```
+
+The writer uses a bounded queue of 256 events and performs serialization, flushes
+and rotation on a background thread. A full queue drops new records instead of
+waiting for disk; `YOLO_STATUS.jsonl` and `YOLO_JSONL_CLOSED` expose written,
+dropped, queued and error counts. Oversized or non-JSON-compatible records are
+also counted as dropped. A file error disables recording and prints a warning;
+detection and CheckTarget continue. Shutdown drains for at most two seconds;
+forced shutdown or a blocked disk can lose queued records. This is diagnostic
+recording, not a lossless recorder, and its runtime overhead still needs checking
+on the robot.
+
+At default limits, a run retains at most five 10 MiB files (50 MiB total).
+`events.jsonl` is newest; `.1` is the preceding file, then `.2` through `.4`.
+Old data, including the initial config record, can rotate out. Collect all files
+and the console log from startup through shutdown. Limits apply **per run**;
+earlier run directories are retained and must be archived/removed separately.
+
+This file does not record images, audio, the orchestrator's plan events or
+candidates discarded by `infer_conf`. Share the existing console log and matching
+camera recording with it. CheckTarget has no end-to-end request/plan ID; the JSONL
+sequence is only a local record number. Correlate with `PRECHECK_RESULT` by target
+and timestamp, with the existing limitation for simultaneous service clients.
