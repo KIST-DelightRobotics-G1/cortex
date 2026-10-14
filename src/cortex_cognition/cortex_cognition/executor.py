@@ -71,6 +71,7 @@ class Params:
     precheck_timeout_s: float = 0.0      # 0 preserves one-shot demo behavior
     precheck_retry_s: float = 0.1        # rate-limited by the executor tick
     detector_fail_open: bool = True       # detector unavailable → proceed (only "not found" blocks)
+    say_on_done: bool = False             # speak done_say when a step finishes (plan_done for the last)
 
 
 @dataclass
@@ -315,6 +316,7 @@ class Executor:
             elif status == DONE and self._st in ('ACCEPT', 'RUN'):
                 self.p.trace(T_STEP_DONE, self.plan_id, st.index, st.title, '')
                 self._final_traced = True
+                self._say_done(st)
                 self._st, self._t = 'WAIT_IDLE', self.p.now()
             elif status == FAILED and self._st in ('ACCEPT', 'RUN'):
                 self._fail_step(detail or 'failed')
@@ -512,6 +514,17 @@ class Executor:
         self.p.say(planner.phrase(self.cfg, key, target))
         reason = 'precheck_timeout' if timeout else 'precheck'
         self._abandon(f'{reason}: {target}: {detail}')
+
+    def _say_done(self, st: Step) -> None:
+        """A step finished well. Steps that start silently (demo inserts) end silently too;
+        the last step of a known-length plan says plan_done instead of its own line."""
+        if not self.prm.say_on_done or not st.say:
+            return
+        last = self.count >= 0 and st.index == self.count - 1
+        text = (planner.phrase(self.cfg, 'plan_done') if last else '') \
+            or planner.done_say(self.cfg, st.action, st.args)
+        if text:
+            self.p.say(text)
 
     def _advance(self) -> None:
         nxt = self.cur + 1
