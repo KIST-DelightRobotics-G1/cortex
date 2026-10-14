@@ -121,3 +121,5 @@ def test_shipped_file_loads_and_covers_the_demo():
     for k in ('open(fridge_door)', 'approach(fridge)', 'pick(cucumber)',
               'step_back(fridge)', 'close(fridge_door)', 'place(cucumber,table)'):
         assert k in keys
+    # the LLM writes take_out for "냉장고에서 오이 가져와" — it must reach the same trained head as pick
+    assert filled['take_out(cucumber,fridge)'] == filled['pick(cucumber)']
