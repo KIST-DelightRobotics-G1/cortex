@@ -18,6 +18,7 @@ class Harness:
     def __init__(self, detector=None, params=None, rewriter=None):
         self.t = 0.0
         self.cmds, self.cancels, self.says, self.traces, self.statuses = [], [], [], [], []
+        self.events = []
         self.detector = detector or (lambda target: (True, 'ok'))
         ports = ex.Ports(
             now=lambda: self.t,
@@ -28,6 +29,7 @@ class Harness:
             stop_speech=lambda: self.says.append('<stop>'),
             trace=lambda k, pid, i, title, body: self.traces.append((k, i, title)),
             status=lambda st, task, sub, i, n, d: self.statuses.append((st, i, n, d)),
+            log=lambda topic, event, **f: self.events.append((event, f)),
         )
         self.x = ex.Executor(CFG, ports, params or ex.Params(), rewriter=rewriter)
 
@@ -49,6 +51,11 @@ class Harness:
 
     def kinds(self):
         return [k for k, _, _ in self.traces]
+
+    def sessions(self):
+        """[(event, plan_id, outcome)] for SESSION_START / SESSION_END only"""
+        return [(e, f['plan_id'], f.get('outcome', '')) for e, f in self.events
+                if e.startswith('SESSION_')]
 
 
 CUCUMBER = [('move_to', ['fridge']), ('open', ['fridge_door']), ('pick', ['cucumber']),
@@ -892,3 +899,78 @@ def test_failed_step_does_not_say_done():
     h.state('nav', ex.RUNNING, 'p1', 0)
     h.state('nav', ex.FAILED, 'p1', 0, 'no path')
     assert '냉장고에 도착했습니다.' not in h.says and '모두 마쳤습니다.' not in h.says
+
+
+# --- sessions: one SESSION_START and exactly one SESSION_END per utterance -------------
+
+def test_session_succeeded_reports_steps_and_duration():
+    h = Harness()
+    h.x.heard('p1', '냉장고에서 오이 가져와')
+    h.plan('p1', CUCUMBER)
+    for i, (a, _) in enumerate(CUCUMBER):
+        run_step(h, planner.exec_of(CFG, a), 'p1', i)
+    assert h.sessions() == [('SESSION_START', 'p1', ''), ('SESSION_END', 'p1', 'succeeded')]
+    end = next(f for e, f in h.events if e == 'SESSION_END')
+    assert end['utterance'] == '냉장고에서 오이 가져와' and end['steps'] == 6
+    assert end['last_step'] == 5 and end['duration_s'] > 0
+
+
+def test_session_reply_confirm_and_plan_error_end_at_once():
+    h = Harness()
+    h.x.heard('p1', '노래 불러줘')
+    h.x.on_step('p1', REPLY, 0, '', [], '노래는 못 합니다.', 'none', '')
+    h.x.heard('p2', '오리 가져와')
+    h.x.on_step('p2', REPLY, 0, '', [], '오이 말씀이신가요?', 'confirm', '')
+    h.x.heard('p3', '화장실로 가')
+    h.x.on_step('p3', ERROR, 0, '', [], '', '', 'unknown_place|bathroom')
+    ends = [(pid, o) for e, pid, o in h.sessions() if e == 'SESSION_END']
+    assert ends == [('p1', 'reply'), ('p2', 'confirm'), ('p3', 'plan_error')]
+
+
+def test_session_user_stop_ends_when_the_module_is_idle():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER)
+    h.state('nav', ex.RUNNING, 'p1', 0)
+    h.x.stop('user')
+    assert ('SESSION_END', 'p1', 'stopped') not in h.sessions()     # still stopping
+    h.state('nav', ex.IDLE, '', 0, 'cancelled')
+    assert h.sessions()[-1] == ('SESSION_END', 'p1', 'stopped')
+
+
+def test_session_preempted_chat_and_new_plan_overlap():
+    h = Harness()
+    h.x.heard('p1', '냉장고 오이')
+    h.plan('p1', CUCUMBER)
+    h.state('nav', ex.RUNNING, 'p1', 0)
+    h.x.heard('p2', '지금 뭐 해?')
+    h.x.on_step('p2', REPLY, 0, '', [], '오이 가지러 가요.', 'chat', '')
+    h.x.heard('p3', '테이블로 가')
+    h.x.on_step('p3', SUB, 0, 'move_to', ['table'], '테이블로 갑니다.', '', '')
+    h.x.on_step('p3', END, 1, '', [], '', '', '')
+    h.state('nav', ex.IDLE, '', 0, 'cancelled')
+    run_step(h, 'nav', 'p3', 0)
+    ends = [(pid, o) for e, pid, o in h.sessions() if e == 'SESSION_END']
+    assert ends == [('p2', 'reply'), ('p1', 'preempted'), ('p3', 'succeeded')]
+
+
+def test_session_failures_replacement_and_timeout():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.x.on_step('p1', SUB, 0, 'move_to', ['fridge'], '갑니다.', '', '')
+    h.advance(1.2)                                       # never accepted
+    h.x.heard('p2', '첫 말')
+    h.x.heard('p3', '고쳐 말함')                          # p2 unanswered → replaced
+    h.advance(h.x.prm.plan_timeout_s + 0.5)              # p3 never answered
+    ends = [(pid, o) for e, pid, o in h.sessions() if e == 'SESSION_END']
+    assert ends == [('p1', 'failed'), ('p2', 'replaced'), ('p3', 'plan_timeout')]
+
+
+def test_session_module_that_does_not_stop_is_failed():
+    h = Harness()
+    h.x.heard('p1', 'x')
+    h.plan('p1', CUCUMBER)
+    h.state('nav', ex.RUNNING, 'p1', 0)
+    h.x.stop('user')
+    h.advance(h.x.prm.safe_stop_timeout_s['nav'] + 1, step=0.1)
+    assert h.sessions()[-1] == ('SESSION_END', 'p1', 'failed')
