@@ -26,7 +26,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
-from cortex_bringup.runtime_config import node_logging
+from cortex_bringup.runtime_config import node_logging, session_log
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -42,6 +42,10 @@ def generate_launch_description() -> LaunchDescription:
                     arguments=['--ros-args', '--log-level', level], condition=condition)
 
     speech = IfCondition(LaunchConfiguration('speech'))
+    rec = session_log(os.path.join(config, 'logging.yaml'))   # logging.yaml session_log.enabled
+    if rec and 'dir' in rec:
+        rec['dir'] = ParameterValue(rec['dir'], value_type=str)
+    recorder = [node('cortex_common', 'session_recorder_node', extra=rec)] if rec is not None else []
 
     return LaunchDescription([
         # backend:=gemini needs GOOGLE_API_KEY in the environment (openai: OPENAI_API_KEY)
@@ -62,4 +66,4 @@ def generate_launch_description() -> LaunchDescription:
              {'role': 'vla', 'cmd_topic': '/cortex/vla/cmd', 'state_topic': '/cortex/vla/state',
               'duration_s': 2.0}),
         node('cortex_gui', 'gui_bridge_node', extra={'camera_transport': 'none'}),
-    ])
+    ] + recorder)

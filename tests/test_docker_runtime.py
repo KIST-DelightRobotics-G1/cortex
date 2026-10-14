@@ -10,9 +10,11 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_script(tmp_path, gpus='all', existing=False, old_gpus=None, old_image='image-new'):
+def run_script(tmp_path, gpus='all', existing=False, old_gpus=None, old_image='image-new',
+               old_logs=None):
     models = tmp_path/'model directory'
     models.mkdir(exist_ok=True)
+    logs = tmp_path/'cortex logs'
     log = tmp_path/'calls.jsonl'
     fake = tmp_path/'docker'
     fake.write_text('#!' + sys.executable + '\n' + """
@@ -29,6 +31,8 @@ elif a[0] == 'inspect':
         print(os.environ['DOCKER_TEST_OLD_GPUS'])
     elif 'runtime.models' in fmt:
         print(os.environ['CORTEX_MODEL_DIR'])
+    elif 'runtime.logs' in fmt:
+        print(os.environ['DOCKER_TEST_OLD_LOGS'])
     else:
         print(os.environ['DOCKER_TEST_OLD_IMAGE'])
 elif a[:2] == ['image', 'inspect']:
@@ -36,7 +40,8 @@ elif a[:2] == ['image', 'inspect']:
 """)
     fake.chmod(0o755)
     env = {**os.environ, 'PATH': str(tmp_path)+os.pathsep+os.environ['PATH'],
-           'CORTEX_MODEL_DIR': str(models), 'CORTEX_GPUS': gpus,
+           'CORTEX_MODEL_DIR': str(models), 'CORTEX_GPUS': gpus, 'CORTEX_LOG_DIR': str(logs),
+           'DOCKER_TEST_OLD_LOGS': old_logs if old_logs is not None else str(logs),
            'TTS_CACHE_DIR': str(tmp_path/'tts'), 'CORTEX_ENV_FILE': str(tmp_path/'no.env'),
            'DOCKER_TEST_LOG': str(log), 'DOCKER_TEST_EXISTS': 'yes' if existing else 'no',
            'DOCKER_TEST_OLD_GPUS': old_gpus if old_gpus is not None else gpus,
@@ -58,6 +63,10 @@ def test_new_container_gpu_and_readonly_model_mount(tmp_path, gpus, expected):
     else:
         assert '--gpus' not in args
     assert args[args.index('--mount')+1] == f'type=bind,src={models},dst=/models/cortex,readonly'
+    assert f'{tmp_path/"cortex logs"}:/root/cortex_logs' in args          # session log on the host
+    assert f'cortex.runtime.logs={tmp_path/"cortex logs"}' in args
+    assert (tmp_path/'cortex logs').is_dir()
+    assert '/etc/localtime:/etc/localtime:ro' in args                    # host time zone
     assert args[-2:] == ['echo', 'argument with spaces']
 
 
@@ -79,3 +88,9 @@ def test_incompatible_existing_container_is_left_untouched(tmp_path, old_gpus, o
 def test_invalid_gpu_option_fails_before_docker(tmp_path):
     result, calls, _ = run_script(tmp_path, 'invalid')
     assert result.returncode != 0 and not calls
+
+
+def test_container_without_the_log_mount_is_left_untouched(tmp_path):
+    result, calls, _ = run_script(tmp_path, existing=True, old_logs='')
+    assert result.returncode != 0 and 'NOT been removed' in result.stderr
+    assert not any(c[0] in ('run', 'rm', 'start', 'exec') for c in calls)

@@ -82,3 +82,16 @@ def test_shipped_logging_yaml_defaults():
     assert node_logging(str(shipped), 'detector_node') == ('info', 'config,status,check', 'all')
     assert node_logging(str(shipped), 'stt_node') == ('info', 'transcript', 'all')
     assert node_logging(str(shipped), 'llm_node') == ('info', '', 'all')
+
+
+def test_session_log_section(tmp_path):
+    from cortex_bringup.runtime_config import session_log
+    shipped = ROOT/'src/cortex_bringup/config/logging.yaml'
+    assert session_log(str(shipped)) == {'dir': '~/cortex_logs', 'keep_days': 14, 'pre_roll_s': 5.0,
+                                         'post_roll_s': 2.0, 'end_timeout_s': 120.0}
+    spec = tmp_path/'logging.yaml'
+    spec.write_text('session_log: {enabled: false, dir: /x}\n')
+    assert session_log(str(spec)) is None and session_log('') is None
+    spec.write_text('session_log: {enabled: true, keep: 3}\n')
+    with pytest.raises(ValueError):
+        session_log(str(spec))
