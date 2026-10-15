@@ -124,7 +124,7 @@ are outside this deployment update; see the handoff notes before robot operation
 
 Console messages are chosen per node in `src/cortex_bringup/config/logging.yaml`
 (launch argument `logging_file:=/absolute/path.yaml` to use another file). The
-shipped file turns on detector `config`, `status`, `check` and orchestrator `plan`,
+shipped file turns on detector `config`, `check` and orchestrator `session`, `plan`,
 `precheck`, `subtask`. Remove a topic from a node's `events` list to silence it.
 No separate collector, bag, video writer, new topic, or message/service definition
 is added. Presence thresholds,
@@ -132,15 +132,18 @@ retries and executor transitions are unchanged, including the **1.0 s** precheck
 
 ```yaml
 nodes:
-  orchestrator_node: {events: [plan, precheck, subtask]}
-  detector_node:     {events: [config, status, check]}
+  orchestrator_node: {events: [session, plan, precheck, subtask]}
+  detector_node:     {events: [config, check]}
 ```
 
-The file is read at launch; edit it and restart (rebuild the image when using
-Docker, or pass `logging_file:=`). `detector_node.diagnostics_log_period_s` in the
-params YAML sets the `YOLO_STATUS` period and must be at least 0.5 s. Normal per-frame processing
-does not print a line; the summary is periodic, and each actual CheckTarget request
-prints one result. Orchestrator prechecks operate in `planner_mode: llm`.
+The file is read at launch; edit it and relaunch cortex. With `docker/run.sh` the
+host's `src/cortex_bringup/config` is mounted read-only and launch reads its
+`logging.yaml` (`CORTEX_LOGGING_FILE`), so no image rebuild is needed. Nothing is
+printed periodically: the detector prints once at start and then only when it
+answers a CheckTarget. The orchestrator re-asks every 0.1 s while a target is not
+visible; the same answer repeated is printed once (`YOLO_CHECK` within 2 s,
+`PRECHECK_RESULT` per step), and `PRECHECK_STATE` carries the final verdict.
+Orchestrator prechecks operate in `planner_mode: llm`.
 
 Messages to inspect, in order:
 
@@ -148,14 +151,15 @@ Messages to inspect, in order:
   loaded classes and target mapping, camera transport, inference/check thresholds,
   window/minimum frames/latest-hit policy, and service/precheck timeouts. The device
   field is the requested setting, not a GPU benchmark or proof of actual utilization.
-- `YOLO_STATUS`: receive/accepted-frame/completed-inference rates over the last
-  interval, lifetime counters, time since each last event, current age of the
-  latest accepted source frame, last inference time and source age at completion.
-  `best_confidence` describes the **last completed inference**, not a new presence
-  decision; check `inference_completed_age_ms` to avoid reading old scores as fresh.
 - `YOLO_CHECK`: target, actual effective check threshold/window, samples, hits,
   latest-frame hit, maximum candidate confidence and the decision reason. Evidence
-  is captured from the same locked window used for the actual response.
+  is captured from the same locked window used for the actual response. The same
+  line carries the pipeline state at that moment: `camera_fps` and `infer_hz` over
+  the last 2 s, `infer_ms` and `best_confidence` of the **last completed
+  inference** (not a new presence decision), and `dropped` — frames rejected since
+  start (`h264_no_output` while waiting for a keyframe, `stale_input`,
+  `out_of_order`, …). `camera_fps: 0` means the camera stopped, not that the
+  object is absent.
 - `PRECHECK_RESULT`: plan_id, step index/action, target, service result and
   `service_ms` (one RPC, not the total retry duration). A positive RPC is not final
   subtask permission: the executor still applies the shared precheck deadline.
@@ -187,7 +191,7 @@ Other reasons and limits:
   `latest_hit` are null when those stages of the decision were not evaluated.
 - `unsupported_class`, `unknown_target`, `model_not_loaded`, `inference_error`:
   inspect classes, mapping, configuration or model errors.
-- Status counters `stale_input`, `future_stamp`, `unstamped`, `out_of_order`,
+- `dropped` counters `stale_input`, `future_stamp`, `unstamped`, `out_of_order`,
   `stale_before_inference` and `window_add_rejected` locate rejected frames.
   Source age assumes synchronized camera/receiver clocks.
 - `h264_no_output` includes keyframe waiting, normal codec buffering and decoder

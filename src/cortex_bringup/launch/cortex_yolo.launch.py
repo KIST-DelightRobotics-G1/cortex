@@ -7,6 +7,8 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, Opaq
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
+from cortex_bringup.runtime_config import default_logging_file
+
 
 def _include(context):
     share = Path(get_package_share_directory('cortex_bringup'))
@@ -33,6 +35,6 @@ def generate_launch_description():
         DeclareLaunchArgument('profile', default_value='fridge_detector_v3.yaml'),
         DeclareLaunchArgument('device', default_value=''),
         DeclareLaunchArgument('detector_only', default_value='false'),
-        DeclareLaunchArgument('logging_file', default_value=str(share/'config/logging.yaml')),
+        DeclareLaunchArgument('logging_file', default_value=default_logging_file(share)),
         OpaqueFunction(function=_include),
     ])

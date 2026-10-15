@@ -87,32 +87,30 @@ def test_stale_and_inference_fault_do_not_report_old_candidates():
     assert diagnostic['reason'] == 'inference_error'
 
 
-def test_statistics_distinguish_received_accepted_and_inferred_rates():
+def test_pipeline_rates_cover_the_last_two_seconds_and_count_drops():
     now = [10.]
     stats = DetectorLogStats(True, clock=lambda: now[0])
-    for _ in range(6):
+    for t in (8.5, 9.0, 9.5, 10.0):
+        now[0] = t
         stats.record('received')
-    stats.record('frame_accepted', source_observed_t=9.9, source_stamp_ns=123)
+        stats.record('frame_accepted', source_observed_t=t)
     stats.record('inference_completed', infer_ms=24.6, best_confidence={'cucumber': .8})
-    stats.record('stale_input')
-    now[0] = 12.
-    first = stats.snapshot()
-    assert first['rates_hz'] == {'received': 3., 'frame_accepted': .5, 'inference_completed': .5}
-    assert first['latest_frame_age_ms'] == 2100.
-    assert first['counters']['stale_input'] == 1
+    stats.record('stale_input', rejected_source_age_ms=900.)
+    stats.record('h264_no_output')
+    now[0] = 10.6                                                  # 8.5 has left the 2 s window
+    first = stats.pipeline()
+    assert first['camera_fps'] == 1.5 and first['infer_hz'] == .5    # 3 frames / 1 inference in 2 s
     assert first['infer_ms'] == 24.6 and first['best_confidence'] == {'cucumber': .8}
+    assert first['dropped'] == {'h264_no_output': 1, 'stale_input': 1}
     now[0] = 14.
-    second = stats.snapshot()
-    assert all(v == 0. for v in second['rates_hz'].values())
-    assert second['received_age_ms'] == 4000.  # distinguishes stopped input from class absence
-    assert first['counters'] == second['counters']
+    later = stats.pipeline()
+    assert later['camera_fps'] == 0. and later['infer_hz'] == 0.      # input stopped
+    assert later['dropped'] == first['dropped']                     # lifetime counts
 
 
 def test_disabled_statistics_retain_no_pipeline_data():
     stats = DetectorLogStats(False)
-    stats.record('received')
+    stats.record('frame_accepted')
     stats.record('inference_completed', infer_ms=12.)
-    result = stats.snapshot()
-    assert result['counters'] == {}
-    assert result['latest_frame_age_ms'] is None and 'infer_ms' not in result
-
+    assert stats.pipeline() == {'camera_fps': 0., 'infer_hz': 0., 'infer_ms': None,
+                                'best_confidence': {}, 'dropped': {}}

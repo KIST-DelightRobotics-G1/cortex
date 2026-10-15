@@ -14,7 +14,7 @@ from cortex_common.events import EventLog
 def context(enabled=True):
     logs = []
     node = SimpleNamespace(
-        _det_timeout=0.,
+        _det_timeout=0., _last_precheck={},
         _exec=SimpleNamespace(plan_id='p-test', cur=2, steps={2: SimpleNamespace(action='pick')}),
         get_logger=lambda: SimpleNamespace(info=logs.append, warning=logs.append),
         get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(to_msg=lambda: Time(sec=1))))
@@ -69,3 +69,19 @@ def test_existing_trace_events_are_mirrored_without_changing_messages():
     assert logs[0].startswith('PRECHECK_STATE ') and event['detail'] == 'not_visible'
     OrchestratorNode._trace(node, ex.T_CANCEL, 'p-test', -1, '계획 중단', 'precheck_timeout: cucumber: not_visible')
     assert logs[1].startswith('PLAN_CANCEL ')
+
+
+def test_repeated_precheck_answer_is_printed_once_per_step():
+    node, logs = context()
+    result = SimpleNamespace(found=False, detail='', label='', confidence=0.)
+    node.det_client = SimpleNamespace(
+        service_is_ready=lambda: True,
+        call_async=lambda request: SimpleNamespace(done=lambda: True, result=lambda: result))
+    for _ in range(5):                                    # retries every 0.1 s, same answer
+        OrchestratorNode._check_target(node, 'cucumber')
+    result.found, result.label, result.confidence = True, 'cucumber', .9
+    OrchestratorNode._check_target(node, 'cucumber')      # the answer changed
+    node._exec.cur = 3                                    # next step asks again
+    OrchestratorNode._check_target(node, 'cucumber')
+    events = [json.loads(line.split(' ', 1)[1]) for line in logs if line.startswith('PRECHECK_RESULT ')]
+    assert [(e['index'], e['found']) for e in events] == [(2, False), (2, True), (3, True)]

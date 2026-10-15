@@ -79,7 +79,7 @@ def test_shipped_logging_yaml_defaults():
     from cortex_bringup.runtime_config import node_logging
     shipped = Path(__file__).resolve().parents[1]/'src/cortex_bringup/config/logging.yaml'
     assert node_logging(str(shipped), 'orchestrator_node') == ('info', 'session,plan,precheck,subtask', 'all')
-    assert node_logging(str(shipped), 'detector_node') == ('info', 'config,status,check', 'all')
+    assert node_logging(str(shipped), 'detector_node') == ('info', 'config,check', 'all')
     assert node_logging(str(shipped), 'stt_node') == ('info', 'transcript', 'all')
     assert node_logging(str(shipped), 'llm_node') == ('info', '', 'all')
 
@@ -95,3 +95,11 @@ def test_session_log_section(tmp_path):
     spec.write_text('session_log: {enabled: true, keep: 3}\n')
     with pytest.raises(ValueError):
         session_log(str(spec))
+
+
+def test_default_logging_file_prefers_the_mounted_host_copy(monkeypatch, tmp_path):
+    from cortex_bringup.runtime_config import default_logging_file
+    monkeypatch.delenv('CORTEX_LOGGING_FILE', raising=False)
+    assert default_logging_file(tmp_path) == str(tmp_path/'config'/'logging.yaml')
+    monkeypatch.setenv('CORTEX_LOGGING_FILE', '/workspace/cortex/host_config/logging.yaml')
+    assert default_logging_file(tmp_path) == '/workspace/cortex/host_config/logging.yaml'

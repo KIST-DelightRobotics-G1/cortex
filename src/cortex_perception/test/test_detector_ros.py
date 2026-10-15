@@ -81,7 +81,7 @@ def test_console_logs_preserve_check_result_and_report_pipeline(monkeypatch, ena
     rclpy.init()
     node = detector_node.DetectorNode(parameter_overrides=[
         Parameter('backend', value='yolo'), Parameter('camera_transport', value='raw'),
-        Parameter('log_events', value='config,status,check' if enabled else '')])
+        Parameter('log_events', value='config,check' if enabled else '')])
     logs = []
     monkeypatch.setattr(node, 'get_logger', lambda: SimpleNamespace(info=logs.append))
     try:
@@ -91,21 +91,21 @@ def test_console_logs_preserve_check_result_and_report_pipeline(monkeypatch, ena
             node._on_raw(msg)
             node._infer()
             time.sleep(.003)
+        # A stale packet must be diagnosed but must not add fresh evidence.
+        msg.header.stamp.sec -= 10
+        node._on_raw(msg)
         result = node._on_check(CheckTarget.Request(target='cucumber'), CheckTarget.Response())
         assert not result.found and result.detail == ''
-        node._log_status()
+        again = node._on_check(CheckTarget.Request(target='cucumber'), CheckTarget.Response())
+        assert not again.found                                    # same answer, not printed again
         if enabled:
-            check = json.loads(next(line.split(' ', 1)[1] for line in logs if line.startswith('YOLO_CHECK ')))
+            checks = [json.loads(line.split(' ', 1)[1]) for line in logs if line.startswith('YOLO_CHECK ')]
+            assert len(checks) == 1 and not any(line.startswith('YOLO_STATUS') for line in logs)
+            check = checks[0]
             assert check['reason'] == 'no_hits' and check['samples'] == 3 and check['hits'] == 0
-            status = json.loads(next(line.split(' ', 1)[1] for line in logs if line.startswith('YOLO_STATUS ')))
-            assert status['counters']['received'] == status['counters']['inference_completed'] == 3
-            assert status['best_confidence'] == {}
-            # A stale packet must be diagnosed but must not add fresh evidence.
-            msg.header.stamp.sec -= 10
-            node._on_raw(msg)
-            snapshot = node._stats.snapshot()
-            assert snapshot['counters']['stale_input'] == 1
-            assert snapshot['counters']['frame_accepted'] == 3
+            assert check['camera_fps'] == 1.5 and check['infer_hz'] == 1.5   # 3 frames in the last 2 s
+            assert check['best_confidence'] == {} and check['infer_ms'] is not None
+            assert check['dropped'] == {'stale_input': 1}
         else:
             assert logs == []
     finally:

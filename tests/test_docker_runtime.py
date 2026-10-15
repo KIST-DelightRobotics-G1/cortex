@@ -8,10 +8,11 @@ import sys
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+CONFIG = ROOT/'src/cortex_bringup/config'
 
 
 def run_script(tmp_path, gpus='all', existing=False, old_gpus=None, old_image='image-new',
-               old_logs=None):
+               old_logs=None, old_config=None):
     models = tmp_path/'model directory'
     models.mkdir(exist_ok=True)
     logs = tmp_path/'cortex logs'
@@ -33,6 +34,8 @@ elif a[0] == 'inspect':
         print(os.environ['CORTEX_MODEL_DIR'])
     elif 'runtime.logs' in fmt:
         print(os.environ['DOCKER_TEST_OLD_LOGS'])
+    elif 'runtime.config' in fmt:
+        print(os.environ['DOCKER_TEST_OLD_CONFIG'])
     else:
         print(os.environ['DOCKER_TEST_OLD_IMAGE'])
 elif a[:2] == ['image', 'inspect']:
@@ -42,6 +45,7 @@ elif a[:2] == ['image', 'inspect']:
     env = {**os.environ, 'PATH': str(tmp_path)+os.pathsep+os.environ['PATH'],
            'CORTEX_MODEL_DIR': str(models), 'CORTEX_GPUS': gpus, 'CORTEX_LOG_DIR': str(logs),
            'DOCKER_TEST_OLD_LOGS': old_logs if old_logs is not None else str(logs),
+           'DOCKER_TEST_OLD_CONFIG': old_config if old_config is not None else str(CONFIG),
            'TTS_CACHE_DIR': str(tmp_path/'tts'), 'CORTEX_ENV_FILE': str(tmp_path/'no.env'),
            'DOCKER_TEST_LOG': str(log), 'DOCKER_TEST_EXISTS': 'yes' if existing else 'no',
            'DOCKER_TEST_OLD_GPUS': old_gpus if old_gpus is not None else gpus,
@@ -67,6 +71,9 @@ def test_new_container_gpu_and_readonly_model_mount(tmp_path, gpus, expected):
     assert f'cortex.runtime.logs={tmp_path/"cortex logs"}' in args
     assert (tmp_path/'cortex logs').is_dir()
     assert '/etc/localtime:/etc/localtime:ro' in args                    # host time zone
+    assert f'{CONFIG}:/workspace/cortex/host_config:ro' in args           # logging.yaml without rebuild
+    assert 'CORTEX_LOGGING_FILE=/workspace/cortex/host_config/logging.yaml' in args
+    assert f'cortex.runtime.config={CONFIG}' in args
     assert args[-2:] == ['echo', 'argument with spaces']
 
 
@@ -92,5 +99,11 @@ def test_invalid_gpu_option_fails_before_docker(tmp_path):
 
 def test_container_without_the_log_mount_is_left_untouched(tmp_path):
     result, calls, _ = run_script(tmp_path, existing=True, old_logs='')
+    assert result.returncode != 0 and 'NOT been removed' in result.stderr
+    assert not any(c[0] in ('run', 'rm', 'start', 'exec') for c in calls)
+
+
+def test_container_without_the_config_mount_is_left_untouched(tmp_path):
+    result, calls, _ = run_script(tmp_path, existing=True, old_config='')
     assert result.returncode != 0 and 'NOT been removed' in result.stderr
     assert not any(c[0] in ('run', 'rm', 'start', 'exec') for c in calls)

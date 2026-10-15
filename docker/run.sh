@@ -3,6 +3,8 @@
 # CORTEX_MODEL_DIR (default ~/models/cortex) mounts read-only at /models/cortex.
 # CORTEX_LOG_DIR (default ~/cortex_logs) mounts at /root/cortex_logs for the session log;
 # the host's /etc/localtime is shared so log file names use the host's time zone.
+# src/cortex_bringup/config mounts read-only at /workspace/cortex/host_config and launch reads
+# its logging.yaml (CORTEX_LOGGING_FILE): edit it on the host, restart cortex, no image rebuild.
 # Env, mounts and GPU assignment are fixed at container creation.
 set -euo pipefail
 
@@ -13,6 +15,7 @@ ENV_FILE="${CORTEX_ENV_FILE:-${REPO_ROOT}/.env}"
 TTS_CACHE_DIR="${TTS_CACHE_DIR:-${HOME}/.cache/cortex_tts}"
 LOG_DIR="${CORTEX_LOG_DIR:-${HOME}/cortex_logs}"
 MODEL_DIR="${CORTEX_MODEL_DIR:-${HOME}/models/cortex}"
+CONFIG_DIR="${REPO_ROOT}/src/cortex_bringup/config"
 GPUS="${CORTEX_GPUS:-all}"
 CMD=("$@")
 [ ${#CMD[@]} -eq 0 ] && CMD=(/bin/bash)
@@ -35,10 +38,12 @@ if [ -n "$existing" ]; then
     old_gpus="$(docker inspect -f '{{ index .Config.Labels "cortex.runtime.gpus" }}' "$CONTAINER")"
     old_model="$(docker inspect -f '{{ index .Config.Labels "cortex.runtime.models" }}' "$CONTAINER")"
     old_logs="$(docker inspect -f '{{ index .Config.Labels "cortex.runtime.logs" }}' "$CONTAINER")"
+    old_config="$(docker inspect -f '{{ index .Config.Labels "cortex.runtime.config" }}' "$CONTAINER")"
     old_image="$(docker inspect -f '{{.Image}}' "$CONTAINER")"
     image_id="$(docker image inspect -f '{{.Id}}' "$IMAGE")"
-    if [ "$old_gpus" != "$GPUS" ] || [ "$old_model" != "$MODEL_DIR" ] || [ "$old_logs" != "$LOG_DIR" ]             || [ "$old_image" != "$image_id" ]; then
-        echo "Existing $CONTAINER has different/legacy GPU, model/log mount or image settings." >&2
+    if [ "$old_gpus" != "$GPUS" ] || [ "$old_model" != "$MODEL_DIR" ] || [ "$old_logs" != "$LOG_DIR" ] \
+            || [ "$old_config" != "$CONFIG_DIR" ] || [ "$old_image" != "$image_id" ]; then
+        echo "Existing $CONTAINER has different/legacy GPU, model/log/config mount or image settings." >&2
         echo "Preserve needed container files, then recreate it; it has NOT been removed." >&2
         exit 1
     fi
@@ -66,11 +71,17 @@ exec docker run -it --name "$CONTAINER" \
     "${GPU_ARGS[@]}" \
     "${ENV_ARGS[@]}" \
     --label "cortex.runtime.gpus=$GPUS" \
-    --label "cortex.runtime.models=$MODEL_DIR"     --label "cortex.runtime.logs=$LOG_DIR" \
+    --label "cortex.runtime.models=$MODEL_DIR" \
+    --label "cortex.runtime.logs=$LOG_DIR" \
+    --label "cortex.runtime.config=$CONFIG_DIR" \
     -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" \
     -e DDS_PEER_IP="${DDS_PEER_IP:-192.168.123.164}" \
     -e DDS_ROBOT_IP="${DDS_ROBOT_IP:-192.168.123.161}" \
     -e CORTEX_NIC="${CORTEX_NIC:-eno2}" \
     --mount "type=bind,src=$MODEL_DIR,dst=/models/cortex,readonly" \
-    -v "${TTS_CACHE_DIR}":/root/.cache/cortex_tts     -v "${LOG_DIR}":/root/cortex_logs     -v /etc/localtime:/etc/localtime:ro \
+    -v "${TTS_CACHE_DIR}":/root/.cache/cortex_tts \
+    -v "${LOG_DIR}":/root/cortex_logs \
+    -v /etc/localtime:/etc/localtime:ro \
+    -v "${CONFIG_DIR}":/workspace/cortex/host_config:ro \
+    -e CORTEX_LOGGING_FILE=/workspace/cortex/host_config/logging.yaml \
     "$IMAGE" "${CMD[@]}"

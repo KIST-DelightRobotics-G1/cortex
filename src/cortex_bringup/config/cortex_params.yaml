@@ -131,7 +131,6 @@ detector_node:
     model_sha256: "3d275b84378da06dc9202b4d40962f49f8d88d18062357d1d167abab10d6f920"
     device: '0'                          # NVIDIA GPU; use cpu or mps explicitly on other hosts
     rate_hz: 8.0
-    diagnostics_log_period_s: 2.0       # YOLO_STATUS period; console events are chosen in logging.yaml
     window_s: 0.6                        # CheckTarget answers by majority over this window
     default_min_confidence: 0.25
     min_frames: 3

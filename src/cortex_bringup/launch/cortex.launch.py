@@ -8,7 +8,8 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
-from cortex_bringup.runtime_config import detector_overrides, node_logging, session_log
+from cortex_bringup.runtime_config import (default_logging_file, detector_overrides, node_logging,
+                                           session_log)
 
 
 def _nodes(context):
@@ -63,7 +64,7 @@ def generate_launch_description():
                               description='Full ROS parameter YAML (site configuration)'),
         DeclareLaunchArgument('detector_profile', default_value='',
                               description='Optional parameter YAML overlay, absolute path'),
-        DeclareLaunchArgument('logging_file', default_value=str(share/'config/logging.yaml'),
+        DeclareLaunchArgument('logging_file', default_value=default_logging_file(share),
                               description='Per-node log level and console events'),
         DeclareLaunchArgument('model', default_value='',
                               description='Override detector_node.model; empty keeps YAML value'),

@@ -12,15 +12,16 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
-from cortex_bringup.runtime_config import node_logging
+from cortex_bringup.runtime_config import default_logging_file, node_logging
 
 
 def generate_launch_description() -> LaunchDescription:
     config = os.path.join(get_package_share_directory('cortex_bringup'), 'config')
     params = os.path.join(config, 'cortex_params.yaml')
+    logging_file = default_logging_file(os.path.dirname(config))
 
     def node(pkg, exe):
-        level, events, record = node_logging(os.path.join(config, 'logging.yaml'), exe)
+        level, events, record = node_logging(logging_file, exe)
         return Node(package=pkg, executable=exe, name=exe, output='screen',
                     parameters=[params, {'log_events': ParameterValue(events, value_type=str),
                                          'record_events': ParameterValue(record, value_type=str)}],
