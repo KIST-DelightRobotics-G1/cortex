@@ -931,6 +931,8 @@ def test_session_succeeded_reports_steps_and_duration():
     end = next(f for e, f in h.events if e == 'SESSION_END')
     assert end['utterance'] == '냉장고에서 오이 가져와' and end['steps'] == 6
     assert end['last_step'] == 5 and end['duration_s'] > 0
+    assert (end['last_exec'], end['last_action']) == (planner.exec_of(CFG, CUCUMBER[5][0]), CUCUMBER[5][0])
+    assert end['last_state'] == 'WAIT_IDLE'           # the last DONE seen, its IDLE not yet
 
 
 def test_session_reply_confirm_and_plan_error_end_at_once():

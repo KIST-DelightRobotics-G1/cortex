@@ -175,9 +175,14 @@ class Executor:
             return
         utterance, t0 = opened
         active = plan_id == self.plan_id
+        st = self._cur() if active else None
+        # last_*: the step and executor sub-state the session ended in (ACCEPT / RUN /
+        # PRECHECK …) — sessions.csv groups failures by them without opening the jsonl.
         self.p.log('session', 'SESSION_END', plan_id=plan_id, utterance=utterance,
                    outcome=outcome, detail=detail, duration_s=round(self.p.now() - t0, 2),
-                   steps=len(self.steps) if active else 0, last_step=self.cur if active else -1)
+                   steps=len(self.steps) if active else 0, last_step=self.cur if active else -1,
+                   last_exec=st.exec if st else '', last_action=st.action if st else '',
+                   last_state=self._st if active else '')
 
     # --------------------------------------------------------------- inputs
     def heard(self, plan_id: str, utterance: str) -> str:

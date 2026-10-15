@@ -23,8 +23,17 @@ from pathlib import Path
 
 _DAY = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 _SAFE = re.compile(r'[^A-Za-z0-9_.-]')
-CSV_FIELDS = ['start', 'plan_id', 'utterance', 'outcome', 'detail', 'duration_s', 'steps',
-              'events', 'file']
+CSV_FIELDS = ['start', 'plan_id', 'utterance', 'outcome', 'detail', 'last_exec', 'last_action',
+              'last_state', 'step', 'duration_s', 'file']
+
+
+def _step(end: dict) -> str:
+    """'2/6' — the step the session ended in (1-based) over the plan's step count."""
+    try:
+        steps, last = int(end.get('steps', 0)), int(end.get('last_step', -1))
+    except (TypeError, ValueError):
+        return ''
+    return f'{last + 1}/{steps}' if steps > 0 and last >= 0 else ''
 
 
 def _local(stamp_ns: int) -> datetime.datetime:
@@ -123,8 +132,10 @@ class SessionLog:
             w.writerow({'start': _local(s.start_ns).isoformat(timespec='seconds'),
                         'plan_id': plan_id, 'utterance': s.utterance,
                         'outcome': end.get('outcome', ''), 'detail': end.get('detail', ''),
-                        'duration_s': end.get('duration_s', ''), 'steps': end.get('steps', ''),
-                        'events': s.count, 'file': s.path.name})
+                        'last_exec': end.get('last_exec', ''),
+                        'last_action': end.get('last_action', ''),
+                        'last_state': end.get('last_state', ''), 'step': _step(end),
+                        'duration_s': end.get('duration_s', ''), 'file': s.path.name})
 
     def prune(self, today: datetime.date) -> list:
         """Delete YYYY-MM-DD folders older than keep_days. Returns the deleted names."""

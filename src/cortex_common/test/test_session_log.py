@@ -30,7 +30,8 @@ def test_one_file_per_session_with_pre_and_post_roll(tmp_path):
     log.add(ev(0, 'orchestrator_node', 'SESSION_START', plan_id='p-1', utterance='오이 가져와'))
     log.add(ev(1, 'detector_node', 'YOLO_CHECK', target='cucumber'))
     log.add(ev(3, 'orchestrator_node', 'SESSION_END', plan_id='p-1', outcome='succeeded',
-               detail='', duration_s=3.0, steps=6))
+               detail='', duration_s=3.0, steps=6, last_step=5, last_exec='vla',
+               last_action='handover', last_state='WAIT_IDLE'))
     log.add(ev(4, 'tts_node', 'TTS_SAY', text='모두 마쳤습니다.'))     # within the post-roll
     log.tick(T0 + 4 * S)
     assert not (log.dir / '2026-10-15' / 'sessions.csv').exists()    # still in post-roll
@@ -42,8 +43,10 @@ def test_one_file_per_session_with_pre_and_post_roll(tmp_path):
         ['STT_TRANSCRIPT', 'SESSION_START', 'YOLO_CHECK', 'SESSION_END', 'TTS_SAY']
     (row,) = rows(log)
     assert row['plan_id'] == 'p-1' and row['utterance'] == '오이 가져와'
-    assert row['outcome'] == 'succeeded' and row['steps'] == '6' and row['events'] == '5'
+    assert row['outcome'] == 'succeeded' and row['step'] == '6/6'
+    assert (row['last_exec'], row['last_action'], row['last_state']) == ('vla', 'handover', 'WAIT_IDLE')
     assert row['file'] == '142233_p-1.jsonl'
+    assert 'events' not in row and 'steps' not in row
 
 
 def test_overlapping_sessions_keep_their_own_plan_events(tmp_path):
@@ -59,7 +62,8 @@ def test_overlapping_sessions_keep_their_own_plan_events(tmp_path):
     day = tmp_path / '2026-10-15'
     assert lines(day / '142233_p-1.jsonl') == ['SESSION_START', 'PLAN_STEP', 'TTS_SAY', 'SESSION_END']
     assert lines(day / '142234_p-2.jsonl') == ['SESSION_START', 'TTS_SAY', 'SESSION_END']
-    assert [(r['plan_id'], r['outcome']) for r in rows(log)] == [('p-2', 'reply'), ('p-1', 'preempted')]
+    assert [(r['plan_id'], r['outcome'], r['step']) for r in rows(log)] == \
+        [('p-2', 'reply', ''), ('p-1', 'preempted', '')]
 
 
 def test_missing_end_times_out_and_shutdown_closes(tmp_path):

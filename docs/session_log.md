@@ -8,7 +8,7 @@
 ```
 ~/cortex_logs/
   2026-10-15/
-    sessions.csv                                그날 세션 한 줄씩: 시각, 발화, 결과, 소요 시간, 단계 수, 파일
+    sessions.csv                                그날 세션 한 줄씩 (아래 열 설명)
     160404_p-1792015432-0001.jsonl              세션 하나의 이벤트 한 줄씩 (JSON)
     160413_p-1792015432-0002.jsonl
 ```
@@ -20,6 +20,20 @@
   이 마운트가 없는 예전 컨테이너는 재사용하지 않고 멈춘다 (다시 만들라는 안내가 나온다).
 - 시각은 호스트 시간대 기준이다 (`/etc/localtime` 공유).
 - 14일(`keep_days`)보다 오래된 날짜 폴더는 그 안의 `sessions.csv` 까지 통째로 recorder 가 지운다.
+
+## sessions.csv 의 열
+
+| 열 | 뜻 |
+|---|---|
+| `start` `plan_id` `utterance` | 시작 시각, 계획 id, 발화 |
+| `outcome` `detail` | 결과(아래 표)와 사유. `failed` 면 detail 이 executor 의 판정 (`timeout`, `module lost`, `not accepted` …) |
+| `last_exec` `last_action` | 끝날 때 진행 중이던 단계의 모듈(`nav`/`vla`)과 동작(`move_to`, `open` …). 대답만 한 세션은 빈칸 |
+| `last_state` | 끝날 때 executor 의 하위 상태. `ACCEPT` 수락 대기, `RUN` 실행 중, `PRECHECK` 사전 확인, `WAIT_IDLE` DONE 뒤 IDLE 대기 |
+| `step` | `2/6` — 몇 단계짜리 계획의 몇 번째에서 끝났나 (1부터). 단계가 없으면 빈칸 |
+| `duration_s` `file` | 소요 시간, 그 세션의 jsonl 파일명 |
+
+실패를 원인별로 묶을 때는 `outcome, detail, last_exec, last_action, last_state` 다섯 열이면 된다.
+같은 조합은 같은 분기에서 난 실패라 jsonl 은 묶음마다 하나만 열어 보면 된다.
 
 ## 세션 하나에 들어가는 것
 
@@ -50,6 +64,11 @@ column -s, -t < ~/cortex_logs/2026-10-15/sessions.csv          # 하루
 
 ```bash
 grep -h failed ~/cortex_logs/*/sessions.csv                     # 남아 있는 전체 기간
+```
+
+```bash
+# 실패를 (detail, 모듈, 동작, 상태) 로 묶어 세기
+grep -h ',failed,' ~/cortex_logs/2026-10-15/sessions.csv | cut -d, -f5-8 | sort | uniq -c | sort -rn
 ```
 
 ```bash
