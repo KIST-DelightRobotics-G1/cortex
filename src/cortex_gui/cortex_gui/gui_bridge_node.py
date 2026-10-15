@@ -10,8 +10,9 @@ WebSocket and, per frame, expects two messages —
     binary      : the latest camera JPEG bytes
 
 Events come from /cortex/trace (TraceEvent). The bridge keeps the last
-`event_buffer` of them and REPLAYS the current plan's events to a client that
-connects late (a refreshed display recovers the whole flow). Still no decisions
+`event_buffer` of them and REPLAYS them to a client that connects late, from the
+newest utterance that became a plan (replay_start) — a refreshed display recovers
+the whole flow, even with small talk after that plan began. Still no decisions
 here — the bridge only renames kinds and buffers.
 
 This node is a THIN adapter: it subscribes to the orchestrator's TaskStatus (and
@@ -51,6 +52,27 @@ _KIND_NAME = {
     TraceEvent.GROUND: 'GROUND', TraceEvent.CANCEL: 'CANCEL',
     TraceEvent.PLAN_DONE: 'PLAN_DONE', TraceEvent.NOTE: 'NOTE',
 }
+
+
+def replay_start(events: list) -> int:
+    """Where a late client's replay starts in the buffer [(seq, plan_id, kind, stop, json)].
+
+    At the HEARD of the newest utterance that became a plan (it got a PLAN_LINE): that
+    plan may still be running while later small talk came and went, and the renderer
+    folds those later events in without losing the plan. Without any plan in the buffer,
+    at the newest HEARD. A stop word's HEARD carries the running plan's id, so it is
+    not where that plan began."""
+    planned = {pid for _, pid, kind, _, _ in events if kind == 'PLAN_LINE'}
+    newest_heard = None
+    for i in range(len(events) - 1, -1, -1):
+        _, pid, kind, stop, _ = events[i]
+        if kind != 'HEARD' or stop:
+            continue
+        if pid in planned:
+            return i
+        if newest_heard is None:
+            newest_heard = i
+    return newest_heard if newest_heard is not None else 0
 
 
 def _event_to_json(msg: TraceEvent) -> str:
@@ -122,7 +144,7 @@ class GuiBridgeNode(Node):
         self._frame: bytes = b''
         self._frame_seq: int = 0                 # bumped per new frame; pump dedupes
         # --- event ring (ROS thread appends; WS thread drains by sequence) ----
-        self._events: list = []                  # [(seq, plan_id, json)]
+        self._events: list = []                  # [(seq, plan_id, kind, stop word?, json)]
         self._event_seq: int = 0
         self._event_cap = int(g('event_buffer').value)
         self._event_lock = threading.Lock()
@@ -153,22 +175,16 @@ class GuiBridgeNode(Node):
     def _on_trace(self, msg: TraceEvent) -> None:
         with self._event_lock:
             self._event_seq += 1
-            self._events.append((self._event_seq, msg.plan_id, _event_to_json(msg)))
+            self._events.append((self._event_seq, msg.plan_id, _KIND_NAME.get(msg.kind, 'NOTE'),
+                                 msg.kind == TraceEvent.HEARD and msg.body == 'stop',
+                                 _event_to_json(msg)))
             if len(self._events) > self._event_cap:
                 del self._events[: len(self._events) - self._event_cap]
 
     def _replay_events(self) -> list:
-        """Events of the current plan (from its HEARD onwards) for a late client."""
+        """Events from the newest plan's HEARD onwards (see replay_start) for a late client."""
         with self._event_lock:
-            if not self._events:
-                return []
-            cur = self._events[-1][1]
-            start = 0
-            for i in range(len(self._events) - 1, -1, -1):
-                if self._events[i][1] != cur:
-                    start = i + 1
-                    break
-            return [e[2] for e in self._events[start:]]
+            return [e[-1] for e in self._events[replay_start(self._events):]]
 
     def _subscribe_camera(self, topic: str) -> None:
         if self._transport == 'none':
@@ -257,7 +273,7 @@ class GuiBridgeNode(Node):
             send_status = status != last_status
             send_frame = seq != last_seq and self._frame
             with self._event_lock:
-                new_events = [e[2] for e in self._events if e[0] > last_ev]
+                new_events = [e[-1] for e in self._events if e[0] > last_ev]
                 last_ev = self._event_seq
             if self._ws_clients and (send_status or send_frame or new_events):
                 frame = self._frame
