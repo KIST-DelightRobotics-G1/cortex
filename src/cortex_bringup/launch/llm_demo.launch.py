@@ -26,15 +26,16 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
-from cortex_bringup.runtime_config import node_logging, session_log
+from cortex_bringup.runtime_config import default_logging_file, node_logging, session_log
 
 
 def generate_launch_description() -> LaunchDescription:
     config = os.path.join(get_package_share_directory('cortex_bringup'), 'config')
     params = os.path.join(config, 'cortex_params.yaml')
+    logging_file = default_logging_file(os.path.dirname(config))
 
     def node(pkg, exe, name=None, extra=None, condition=None):
-        level, events, record = node_logging(os.path.join(config, 'logging.yaml'), name or exe)
+        level, events, record = node_logging(logging_file, name or exe)
         return Node(package=pkg, executable=exe, name=name or exe, output='screen',
                     parameters=[params] + ([extra] if extra else [])
                     + [{'log_events': ParameterValue(events, value_type=str),
@@ -42,7 +43,7 @@ def generate_launch_description() -> LaunchDescription:
                     arguments=['--ros-args', '--log-level', level], condition=condition)
 
     speech = IfCondition(LaunchConfiguration('speech'))
-    rec = session_log(os.path.join(config, 'logging.yaml'))   # logging.yaml session_log.enabled
+    rec = session_log(logging_file)   # logging.yaml session_log.enabled
     if rec and 'dir' in rec:
         rec['dir'] = ParameterValue(rec['dir'], value_type=str)
     recorder = [node('cortex_common', 'session_recorder_node', extra=rec)] if rec is not None else []

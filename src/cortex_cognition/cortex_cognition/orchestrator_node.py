@@ -304,6 +304,7 @@ class OrchestratorNode(Node):
         #   precheck: PRECHECK_CONFIG PRECHECK_RESULT PRECHECK_STATE
         #   subtask: SUBTASK_SENT WAIT_IDLE STUB_DISPATCH · state: ROBOT_STATE · config: VLA_PROMPT TTS_WARMUP
         self.events = EventLog(self, known=('session', 'plan', 'precheck', 'subtask', 'state', 'config'))
+        self._last_precheck = {}         # target -> last PRECHECK_RESULT printed (repeat suppression)
         scenario_dir = g('scenario_dir').value
         tick_hz = float(g('tick_rate_hz').value)
         self.mode = g('planner_mode').value
@@ -572,11 +573,17 @@ class OrchestratorNode(Node):
         def finish(found, detail):
             if self.events.on('precheck'):
                 step = self._exec.steps.get(self._exec.cur) if self._exec else None
-                self.events(
-                    'precheck', 'PRECHECK_RESULT', plan_id=self._exec.plan_id if self._exec else '',
-                    index=self._exec.cur if self._exec else -1,
-                    action=step.action if step else '', target=target, found=found,
-                    detail=detail, service_ms=round(1000*(time.monotonic()-started), 1))
+                plan_id = self._exec.plan_id if self._exec else ''
+                index = self._exec.cur if self._exec else -1
+                # Retries (every precheck_retry_s) repeat the same answer — print the first and
+                # each change; PRECHECK_STATE carries the final verdict.
+                answer = (plan_id, index, found, detail)
+                if self._last_precheck.get(target) != answer:
+                    self._last_precheck[target] = answer
+                    self.events(
+                        'precheck', 'PRECHECK_RESULT', plan_id=plan_id, index=index,
+                        action=step.action if step else '', target=target, found=found,
+                        detail=detail, service_ms=round(1000*(time.monotonic()-started), 1))
             return found, detail
 
         if not self.det_client.service_is_ready():

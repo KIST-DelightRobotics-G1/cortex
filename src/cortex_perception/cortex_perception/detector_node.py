@@ -35,7 +35,6 @@ class DetectorNode(Node):
             'model': 'yolo26s.pt', 'model_sha256': '', 'device': '', 'rate_hz': 8.0, 'window_s': 0.6,
             'default_min_confidence': 0.4, 'infer_conf': 0.25, 'imgsz': 640,
             'min_frames': 3, 'allow_unstamped': False, 'require_latest_hit': False,
-            'diagnostics_log_period_s': 2.0,
             'target_keys': ['fridge_door', 'fridge', 'cucumber', 'user'],
             'target_classes': ['refrigerator', 'refrigerator', 'cucumber', 'person'],
         }
@@ -53,12 +52,11 @@ class DetectorNode(Node):
             raise ValueError('invalid inference settings')
         if g('camera_transport') not in ('h264', 'raw', 'compressed'):
             raise ValueError('camera_transport must be h264, raw or compressed')
-        # Console events (logging.yaml): config = YOLO_CONFIG, status = YOLO_STATUS, check = YOLO_CHECK.
-        self._events = EventLog(self, known=('config', 'status', 'check'))
-        self._diagnostics_enabled = self._events.on('status') or self._events.on('check')
-        log_period = float(g('diagnostics_log_period_s'))
-        if self._diagnostics_enabled and (not math.isfinite(log_period) or log_period < 0.5):
-            raise ValueError('diagnostics_log_period_s must be finite and >= 0.5')
+        # Events (logging.yaml): config = YOLO_CONFIG at start, check = YOLO_CHECK per answer,
+        # with the camera / inference state of that moment. Nothing is printed periodically.
+        self._events = EventLog(self, known=('config', 'check'))
+        self._diagnostics_enabled = self._events.on('check')
+        self._last_check = {}           # target -> ((found, reason), monotonic time) for repeat suppression
         self._stats = DetectorLogStats(self._diagnostics_enabled)
         self._lock = threading.Lock()
         self._frame = None
@@ -110,11 +108,6 @@ class DetectorNode(Node):
                   require_latest_hit=g('require_latest_hit'), allow_unstamped=self.allow_unstamped,
                   classes=dict(self._model.names) if self._model else {},
                   targets={key: sorted(labels) for key, labels in self.targets.items()})
-        if self._diagnostics_enabled and self.backend == 'yolo':
-            self.create_timer(log_period, self._log_status, callback_group=self._io_group)
-
-    def _log_status(self):
-        self._events('status', 'YOLO_STATUS', **self._stats.snapshot())
 
     def _accept_frame(self, frame, header):
         stamp_ns = header.stamp.sec*1_000_000_000 + header.stamp.nanosec
@@ -237,9 +230,20 @@ class DetectorNode(Node):
             result = self._window.check(request.target, time.monotonic(),
                                         request.min_confidence, request.max_age_s,
                                         diagnostics=diagnostic)
-        if diagnostic is not None:
-            self._events('check', 'YOLO_CHECK', target=request.target, **diagnostic)
+        if diagnostic is not None and not self._repeated(request.target, diagnostic):
+            pipeline = self._stats.pipeline() if self.backend == 'yolo' else {}
+            self._events('check', 'YOLO_CHECK', target=request.target, **diagnostic, **pipeline)
         return fill_response(response, result)
+
+    # The orchestrator re-asks every 0.1 s while a target is not visible (up to 1 s). Print the
+    # first answer and every change; the same answer again within REPEAT_S is not printed.
+    REPEAT_S = 2.0
+
+    def _repeated(self, target, diagnostic):
+        answer, now = (diagnostic.get('found'), diagnostic.get('reason')), time.monotonic()
+        previous = self._last_check.get(target)
+        self._last_check[target] = (answer, now)
+        return previous is not None and previous[0] == answer and now-previous[1] < self.REPEAT_S
 
 
 def main(args=None):

@@ -1,4 +1,5 @@
 """Resolve deployment YAML and optional launch overrides without ROS imports."""
+import os
 from pathlib import Path
 
 import yaml
@@ -35,6 +36,12 @@ def detector_overrides(params_file, profile='', model='', device=''):
 
 
 LOG_LEVELS = ('debug', 'info', 'warn', 'error', 'fatal')
+
+
+def default_logging_file(share):
+    """$CORTEX_LOGGING_FILE when set (docker/run.sh points it at the host's config, so an edit
+    applies on the next launch without an image rebuild), else the installed logging.yaml."""
+    return os.environ.get('CORTEX_LOGGING_FILE') or str(Path(share)/'config'/'logging.yaml')
 
 
 def _logging_spec(logging_file):

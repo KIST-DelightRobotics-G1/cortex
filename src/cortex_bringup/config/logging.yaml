@@ -1,4 +1,6 @@
 # Console logging per node. Read by the launch files (logging_file:=/path to swap).
+# Docker (docker/run.sh): this file is read from the host, so an edit applies when cortex is
+# relaunched — no image rebuild. Without Docker: rebuild unless built with --symlink-install.
 #
 #   level   ROS log level: debug | info | warn | error | fatal (node value wins over the top one).
 #           At info each node prints one startup line plus warnings/errors; warn hides the startup line.
@@ -13,9 +15,9 @@
 #                      subtask   SUBTASK_SENT, WAIT_IDLE, STUB_DISPATCH
 #                      state     ROBOT_STATE
 #                      config    VLA_PROMPT, TTS_WARMUP
-#   detector_node      config    YOLO_CONFIG
-#                      status    YOLO_STATUS (every diagnostics_log_period_s)
-#                      check     YOLO_CHECK (each CheckTarget query)
+#   detector_node      config    YOLO_CONFIG (once at start)
+#                      check     YOLO_CHECK (each answer + camera fps · infer Hz/ms · drops at that
+#                                moment; the same answer repeated within 2 s is not printed)
 #   stt_node           transcript STT_TRANSCRIPT
 #                      session   STT_SESSION (stream start / restart / stop)
 #   llm_node           request   LLM_REQUEST
@@ -43,7 +45,7 @@ session_log:
 
 nodes:
   orchestrator_node: {events: [session, plan, precheck, subtask]}
-  detector_node:     {events: [config, status, check]}
+  detector_node:     {events: [config, check]}
   stt_node:          {events: [transcript]}
   # llm_node:        {events: [request, line, timing]}
   # tts_node:        {events: [say, prefetch]}
