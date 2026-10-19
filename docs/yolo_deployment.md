@@ -262,8 +262,11 @@ The feature is off by default. Configure these sections in a copy of
 - `holding_detector_service`: match the wrist detector's service (default
   `/cortex/wrist_detector/check`); `holding_max_age_s` bounds source age on return.
 - Keep a positive `precheck_timeout_s` (allow time for the new frame window).
-- `wrist_detector_node.ros__parameters.camera_topic`: the site's **original right
-  wrist** stream; confirm name, transport, timestamp clock and image orientation.
+- `wrist_detector_node.ros__parameters.camera_topic` defaults to
+  `/kist/camera/right_wrist/color/h264`, with `camera_transport: h264`, matching
+  ext-sensor-io's `right_wrist` camera name. The ego detector keeps
+  `/kist/camera/head/color/h264`. Confirm stream reception, timestamp clock and
+  image orientation; override the topic if the site renames the camera.
 - `model`, optional `model_sha256`, `device`: a local weight and deployment device.
   The global launch `model:=` override remains **ego-only**. `device:=` applies to
   both detectors. Models are not stored in the repository or downloaded at launch.
@@ -280,7 +283,7 @@ The feature is off by default. Configure these sections in a copy of
 
 Launch rejects missing weights, missing/shared camera topics or services, a demo
 stub, inconsistent target mapping, or invalid ROI coordinates/overlap. The empty
-camera/model fields in the shipped YAML must be supplied before enabling the guard.
+wrist `model` field in the shipped YAML must be supplied before enabling the guard.
 The wrist default check threshold is 0.70, with `infer_conf: 0.25` and no ROI filter;
 the ego detector keeps its separate 0.25 check threshold. The wrist setting is an
 offline-video candidate, not a validated grasp detector for all camera conditions.
