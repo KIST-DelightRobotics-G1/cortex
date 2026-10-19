@@ -71,6 +71,7 @@ class Params:
     precheck_timeout_s: float = 0.0      # 0 preserves one-shot demo behavior
     precheck_retry_s: float = 0.1        # rate-limited by the executor tick
     detector_fail_open: bool = True       # detector unavailable → proceed (only "not found" blocks)
+    holding_precheck_enabled: bool = False  # opt-in wrist evidence for carrying cucumber
     say_on_done: bool = False             # speak done_say when a step finishes (plan_done for the last)
 
 
@@ -85,6 +86,8 @@ class Ports:
     trace: Callable[[int, str, int, str, str], None]      # (kind, plan_id, index, title, body)
     status: Callable[[int, str, str, int, int, str], None]  # (state, task, subtask, idx, count, detail)
     log: Callable[..., None] = lambda topic, event, **fields: None   # console event (EventLog)
+    held_object: Callable[[], str] = lambda: 'none'  # expected state from completed subtasks
+    check_holding: Callable[[float], tuple] = lambda since: (False, 'no_detector')
 
 
 @dataclass
@@ -120,6 +123,8 @@ class Executor:
         if (not math.isfinite(self.prm.precheck_timeout_s) or self.prm.precheck_timeout_s < 0
                 or not math.isfinite(self.prm.precheck_retry_s) or self.prm.precheck_retry_s <= 0):
             raise ValueError('invalid precheck retry settings')
+        if self.prm.holding_precheck_enabled and self.prm.precheck_timeout_s <= 0:
+            raise ValueError('holding precheck requires a positive precheck_timeout_s')
         self.mod = {'nav': ModuleView(), 'vla': ModuleView()}
         self._sessions: dict[str, tuple] = {}   # plan_id → (utterance, start time); survives _reset
         self._reset()
@@ -138,6 +143,7 @@ class Executor:
         self._precheck_next = 0.0
         self._precheck_detail = ''
         self._precheck_target = ''
+        self._holding_required = False
         self._busy_seen = False         # module reported the current step as non-IDLE
         self._final_traced = False      # STEP_DONE / STEP_FAILED already shown for the current step
         self._stop_mode = ''            # STOPPING: 'cancel' (cancel sent) | 'finish' (let the step end)
@@ -476,6 +482,13 @@ class Executor:
         self._st, self._t = 'PRECHECK', self.p.now()
         self._precheck_detail = ''
         self._precheck_target = ''
+        st = self._cur()
+        # Latch the requirement, never a positive observation. A missed detection
+        # must not turn 'expected to hold cucumber' into an unguarded carrying step.
+        carrying_step = (st.action, st.args) in (
+            ('step_back', ['fridge']), ('close', ['fridge_door']), ('move_to', ['table']))
+        self._holding_required = (self.prm.holding_precheck_enabled and carrying_step and
+                                  self.p.held_object() == 'cucumber')
         self._check_precondition()
 
     def _check_precondition(self) -> None:
@@ -494,8 +507,13 @@ class Executor:
         # Each attempt queries every target again. Never latch an earlier hit
         # across retries: fridge-only then cucumber-only must not authorize.
         results = []
+        if self._holding_required:
+            # Wrist evidence is the only required object check for these carrying steps.
+            # Ego observations are advisory and never consume this deadline.
+            targets = ['held_cucumber']
         for target in targets:
-            found, detail = self.p.check_target(target)
+            found, detail = (self.p.check_holding(self._t) if self._holding_required and target == 'held_cucumber'
+                             else self.p.check_target(target))
             now = self.p.now()
             # All queries share the original step deadline, including slow calls.
             if self.prm.precheck_timeout_s > 0 and now - self._t >= self.prm.precheck_timeout_s:
@@ -504,7 +522,8 @@ class Executor:
                 return
             results.append((target, found, detail))
         blocked = [(t, d or 'not_visible') for t, found, d in results
-                   if not found and not (d and self.prm.detector_fail_open)]
+                   if not found and not (d and self.prm.detector_fail_open and
+                                         not self._holding_required)]
         if blocked:
             terminal_reasons = ('unsupported_class', 'unknown_target', 'invalid_request')
             target, reason = next(((t, d) for t, d in blocked if d in terminal_reasons), blocked[0])

@@ -46,6 +46,7 @@ session_log:
 nodes:
   orchestrator_node: {events: [session, plan, precheck, subtask]}
   detector_node:     {events: [config, check]}
+  wrist_detector_node: {events: [config, check]}
   stt_node:          {events: [transcript]}
   # llm_node:        {events: [request, line, timing]}
   # tts_node:        {events: [say, prefetch]}

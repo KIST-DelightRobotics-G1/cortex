@@ -35,6 +35,7 @@ class DetectorNode(Node):
             'model': 'yolo26s.pt', 'model_sha256': '', 'device': '', 'rate_hz': 8.0, 'window_s': 0.6,
             'default_min_confidence': 0.4, 'infer_conf': 0.25, 'imgsz': 640,
             'min_frames': 3, 'allow_unstamped': False, 'require_latest_hit': False,
+            'check_roi': [0., 0., 1., 1.], 'roi_min_overlap': 0.,
             'target_keys': ['fridge_door', 'fridge', 'cucumber', 'user'],
             'target_classes': ['refrigerator', 'refrigerator', 'cucumber', 'person'],
         }
@@ -71,7 +72,8 @@ class DetectorNode(Node):
         names = self._model.names.values() if self._model else []
         self._window = PresenceWindow(self.targets, names, self.window_s,
                                       float(g('default_min_confidence')), int(g('min_frames')),
-                                      bool(g('require_latest_hit')))
+                                      bool(g('require_latest_hit')),
+                                      list(g('check_roi')), float(g('roi_min_overlap')))
         if self.backend == 'yolo' and self._model is None:
             self._window.invalidate('model_not_loaded')
         self.det_pub = self.create_publisher(DetectionArray, g('detections_topic'), 10)
@@ -106,6 +108,7 @@ class DetectorNode(Node):
                   rate_hz=rate, infer_conf=infer_conf, imgsz=g('imgsz'), window_s=self.window_s,
                   min_frames=g('min_frames'), min_confidence=g('default_min_confidence'),
                   require_latest_hit=g('require_latest_hit'), allow_unstamped=self.allow_unstamped,
+                  check_roi=list(g('check_roi')), roi_min_overlap=g('roi_min_overlap'),
                   classes=dict(self._model.names) if self._model else {},
                   targets={key: sorted(labels) for key, labels in self.targets.items()})
 

@@ -9,7 +9,7 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 from cortex_bringup.runtime_config import (default_logging_file, detector_overrides, node_logging,
-                                           session_log)
+                                           session_log, wrist_detector_parameters)
 
 
 def _nodes(context):
@@ -21,29 +21,36 @@ def _nodes(context):
     overrides = detector_overrides(
         params, profile, LaunchConfiguration('model').perform(context),
         LaunchConfiguration('device').perform(context))
+    wrist = wrist_detector_parameters(params, profile, LaunchConfiguration('device').perform(context))
     only = LaunchConfiguration('detector_only').perform(context).lower()
     if only not in ('true', 'false'):
         raise ValueError('detector_only must be true or false')
     llm_backend = LaunchConfiguration('llm_backend').perform(context)
     if llm_backend and llm_backend not in ('dummy', 'gemini', 'openai'):
         raise ValueError('llm_backend must be dummy, gemini or openai')
-    graph = [('cortex_perception', 'detector_node')]
+    graph = [('cortex_perception', 'detector_node', 'detector_node')]
+    if wrist is not None:
+        graph.append(('cortex_perception', 'detector_node', 'wrist_detector_node'))
     if only == 'false':
-        graph += [('cortex_perception', 'stt_node'), ('cortex_cognition', 'llm_node'),
+        graph += [(package, executable, executable) for package, executable in
+                  [('cortex_perception', 'stt_node'), ('cortex_cognition', 'llm_node'),
                   ('cortex_cognition', 'orchestrator_node'), ('cortex_action', 'tts_node'),
-                  ('cortex_action', 'speaker_node'), ('cortex_gui', 'gui_bridge_node')]
+                  ('cortex_action', 'speaker_node'), ('cortex_gui', 'gui_bridge_node')]]
     nodes = []
-    for package, executable in graph:
+    for package, executable, name in graph:
         layers = [params] + ([profile] if profile else [])
-        if executable == 'detector_node' and overrides:
+        if name == 'wrist_detector_node':
+            layers = [{key: ParameterValue(value, value_type=str) if isinstance(value, str) else value
+                       for key, value in wrist.items()}]
+        if name == 'detector_node' and overrides:
             layers.append({key: ParameterValue(value, value_type=str)
                            for key, value in overrides.items()})
         if executable == 'llm_node' and llm_backend:
             layers.append({'backend': ParameterValue(llm_backend, value_type=str)})
-        level, events, record = node_logging(logging_file, executable)
+        level, events, record = node_logging(logging_file, name)
         layers.append({'log_events': ParameterValue(events, value_type=str),
                        'record_events': ParameterValue(record, value_type=str)})
-        nodes.append(Node(package=package, executable=executable, name=executable,
+        nodes.append(Node(package=package, executable=executable, name=name,
                           output='screen', parameters=layers,
                           arguments=['--ros-args', '--log-level', level]))
     recorder = session_log(logging_file) if only == 'false' else None
