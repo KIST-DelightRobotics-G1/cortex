@@ -148,7 +148,7 @@ detector_node:
     target_classes: [refrigerator, refrigerator, cucumber, person]
 
 # Launched by cortex.launch.py only when holding_precheck_enabled is true.
-# Confirm the site's wrist stream and supply a locally validated weight before enabling.
+# Reuses the ego detector's 3rd continued weight; validate wrist evidence before enabling.
 wrist_detector_node:
   ros__parameters:
     camera_topic: /kist/camera/right_wrist/color/h264   # ext-sensor-io right_wrist stream
@@ -156,8 +156,8 @@ wrist_detector_node:
     detections_topic: /cortex/wrist_detector/detections
     service: /cortex/wrist_detector/check
     backend: yolo
-    model: ''
-    model_sha256: ''
+    model: /models/cortex/yolo26s_fridge_cucumber_continued.pt
+    model_sha256: "3d275b84378da06dc9202b4d40962f49f8d88d18062357d1d167abab10d6f920"
     device: '0'
     rate_hz: 8.0
     window_s: 0.6

@@ -267,9 +267,14 @@ The feature is off by default. Configure these sections in a copy of
   ext-sensor-io's `right_wrist` camera name. The ego detector keeps
   `/kist/camera/head/color/h264`. Confirm stream reception, timestamp clock and
   image orientation; override the topic if the site renames the camera.
-- `model`, optional `model_sha256`, `device`: a local weight and deployment device.
-  The global launch `model:=` override remains **ego-only**. `device:=` applies to
-  both detectors. Models are not stored in the repository or downloaded at launch.
+- `model` and `model_sha256` default to the same YOLO26s 3rd continued weight as
+  the ego detector: `/models/cortex/yolo26s_fridge_cucumber_continued.pt`. The
+  existing Docker model mount serves both nodes; no second copy of the file is
+  needed. Each node loads its own model instance and retains separate camera,
+  confidence and window settings. If using a different weight, update that node's
+  path and hash together. The global launch `model:=` override remains **ego-only**;
+  `device:=` applies to both detectors. Models are not stored in the repository
+  or downloaded at launch.
 - `check_roi`: optional `[left, top, right, bottom]` in normalized full-image
   coordinates. `roi_min_overlap: 0.0` disables the spatial filter. To enable it,
   calibrate the region and set a positive overlap: it is intersection area
@@ -282,8 +287,10 @@ The feature is off by default. Configure these sections in a copy of
   `allow_unstamped: false` for this branch's wrist check.
 
 Launch rejects missing weights, missing/shared camera topics or services, a demo
-stub, inconsistent target mapping, or invalid ROI coordinates/overlap. The empty
-wrist `model` field in the shipped YAML must be supplied before enabling the guard.
+stub, inconsistent target mapping, or invalid ROI coordinates/overlap. With the
+standard model file already mounted, enable the guard through
+`holding_precheck_enabled`; the shipped camera and model paths need no edits
+unless the deployment uses different locations.
 The wrist default check threshold is 0.70, with `infer_conf: 0.25` and no ROI filter;
 the ego detector keeps its separate 0.25 check threshold. The wrist setting is an
 offline-video candidate, not a validated grasp detector for all camera conditions.
