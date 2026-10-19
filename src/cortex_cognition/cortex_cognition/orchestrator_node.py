@@ -293,6 +293,9 @@ class OrchestratorNode(Node):
         self.declare_parameter('say_on_done', True)      # speak actions.yaml done_say when a step finishes
         self.declare_parameter('precheck_timeout_s', 0.0)
         self.declare_parameter('precheck_retry_s', 0.1)
+        self.declare_parameter('holding_precheck_enabled', False)
+        self.declare_parameter('holding_detector_service', '/cortex/wrist_detector/check')
+        self.declare_parameter('holding_max_age_s', 0.6)
         self.declare_parameter('tts_prefetch_topic', '/cortex/tts/prefetch')
         self.declare_parameter('tts_warmup_topic', '/cortex/tts/warmup')
         self.declare_parameter('ack_phrase', '네.')      # spoken the moment a request goes to the LLM; '' = off
@@ -301,7 +304,7 @@ class OrchestratorNode(Node):
         # Console events (logging.yaml → log_events). Topic → events:
         #   session: SESSION_START SESSION_END (one voice command, from the executor)
         #   plan: PLAN_STEP PLAN_END PLAN_CANCEL PLAN_IGNORED REWRITE SCENARIO
-        #   precheck: PRECHECK_CONFIG PRECHECK_RESULT PRECHECK_STATE
+        #   precheck: PRECHECK_CONFIG PRECHECK_RESULT PRECHECK_STATE PRECHECK_AUXILIARY
         #   subtask: SUBTASK_SENT WAIT_IDLE STUB_DISPATCH · state: ROBOT_STATE · config: VLA_PROMPT TTS_WARMUP
         self.events = EventLog(self, known=('session', 'plan', 'precheck', 'subtask', 'state', 'config'))
         self._last_precheck = {}         # target -> last PRECHECK_RESULT printed (repeat suppression)
@@ -396,6 +399,17 @@ class OrchestratorNode(Node):
         self.det_client = self.create_client(CheckTarget, g('detector_service').value,
                                              callback_group=self._det_grp)
         self._det_timeout = float(g('detector_call_timeout_s').value)
+        self._holding_max_age = float(g('holding_max_age_s').value)
+        holding_enabled = bool(g('holding_precheck_enabled').value)
+        if holding_enabled and (not 0 < self._holding_max_age < float('inf') or
+                                g('holding_detector_service').value == g('detector_service').value):
+            raise ValueError('holding check needs a separate service and positive finite max age')
+        self.wrist_client = (self.create_client(CheckTarget, g('holding_detector_service').value,
+                                               callback_group=self._det_grp)
+                             if holding_enabled else None)
+        self._ego_observation, self._ego_since = None, None
+        if holding_enabled:
+            self.create_timer(0.1, self._poll_ego_observation, callback_group=grp)
 
         prm = ex.Params(
             accept_timeout_s=float(g('accept_timeout_s').value),
@@ -411,12 +425,15 @@ class OrchestratorNode(Node):
             say_on_done=bool(g('say_on_done').value),
             precheck_timeout_s=float(g('precheck_timeout_s').value),
             precheck_retry_s=float(g('precheck_retry_s').value),
+            holding_precheck_enabled=holding_enabled,
         )
         ports = ex.Ports(
             now=self._now,
             send_cmd=self._send_cmd,
             send_cancel=self._send_cancel,
             check_target=self._check_target,
+            held_object=lambda: self.holding,
+            check_holding=self._check_holding,
             say=self._say,
             stop_speech=lambda: self.stop_pub.publish(Bool(data=True)),
             trace=self._trace,
@@ -430,7 +447,10 @@ class OrchestratorNode(Node):
                     detector_call_timeout_s=self._det_timeout,
                     precheck_timeout_s=prm.precheck_timeout_s,
                     precheck_retry_s=prm.precheck_retry_s,
-                    detector_fail_open=prm.detector_fail_open)
+                    detector_fail_open=prm.detector_fail_open,
+                    holding_precheck_enabled=holding_enabled,
+                    holding_detector_service=g('holding_detector_service').value,
+                    holding_max_age_s=self._holding_max_age)
         # 100 ms absence monitor (accept / stale / step timeouts); everything else is event-driven.
         self.create_timer(0.1, self._exec.tick, callback_group=grp)
         self.get_logger().info(
@@ -564,11 +584,64 @@ class OrchestratorNode(Node):
     def _send_cancel(self, which: str, plan_id: str, index: int) -> None:
         self.cmd_pub[which].publish(SubtaskCmd(plan_id=plan_id, index=index, cancel=True))
 
-    def _check_target(self, target: str):
+    def _check_holding(self, since: float):
+        self._observe_ego(since)
+        return self._check_target('held_cucumber', wrist_since=since)
+
+    def _observe_ego(self, since: float):
+        # One best-effort request per PRECHECK. Never wait for ego in the dispatch
+        # path; the timer shares the orchestration group and only writes a log.
+        if self._ego_since == since or not self.events.on('precheck'):
+            return
+        if self._ego_observation and self._ego_observation['future'] is not None:
+            self._ego_observation['future'].cancel()
+        self._ego_since = since
+        step = self._exec.steps.get(self._exec.cur)
+        context = dict(plan_id=self._exec.plan_id, index=self._exec.cur,
+                       action=step.action if step else '', target='cucumber',
+                       source='ego', required=False)
+        observation = dict(started=time.monotonic(), context=context,
+                           future=None, detail='no_detector')
+        try:
+            if self.det_client.service_is_ready():
+                observation['future'] = self.det_client.call_async(CheckTarget.Request(target='cucumber'))
+        except Exception:
+            observation['detail'] = 'detector_error'
+        self._ego_observation = observation
+
+    def _poll_ego_observation(self):
+        observation = self._ego_observation
+        if observation is None:
+            return
+        future, elapsed = observation['future'], time.monotonic()-observation['started']
+        if future is not None and not future.done() and elapsed < self._det_timeout:
+            return
+        self._ego_observation = None
+        found, detail = False, observation['detail']
+        if future is not None:
+            if not future.done():
+                future.cancel()
+                detail = 'detector_timeout'
+            else:
+                try:
+                    r = future.result()
+                    found = bool(r.found)
+                    detail = f'{r.label} {r.confidence:.2f}' if found else r.detail or 'not_visible'
+                except Exception:
+                    detail = 'detector_error'
+        self.events('precheck', 'PRECHECK_AUXILIARY', **observation['context'],
+                    found=found, detail=detail, service_ms=round(1000*elapsed, 1))
+
+    def _check_target(self, target: str, *, wrist_since=None):
         """Synchronous detector query -> (found, detail). A non-empty detail with
         found=False means 'no verdict' (service missing / timeout / stale frame),
         handled according to detector_fail_open and the bounded precheck policy."""
         started = time.monotonic()
+        wrist = wrist_since is not None
+        client = self.wrist_client if wrist else self.det_client
+        # Zero means 'use detector default', so send a small positive limit on
+        # entry. Only source frames captured after PRECHECK began may contribute.
+        max_age = min(self._holding_max_age, max(1e-6, self._now()-wrist_since)) if wrist else 0.
 
         def finish(found, detail):
             if self.events.on('precheck'):
@@ -583,12 +656,13 @@ class OrchestratorNode(Node):
                     self.events(
                         'precheck', 'PRECHECK_RESULT', plan_id=plan_id, index=index,
                         action=step.action if step else '', target=target, found=found,
-                        detail=detail, service_ms=round(1000*(time.monotonic()-started), 1))
+                        detail=detail, source='right_wrist' if wrist else 'ego',
+                        service_ms=round(1000*(time.monotonic()-started), 1))
             return found, detail
 
-        if not self.det_client.service_is_ready():
+        if client is None or not client.service_is_ready():
             return finish(False, 'no_detector')
-        fut = self.det_client.call_async(CheckTarget.Request(target=target))
+        fut = client.call_async(CheckTarget.Request(target=target, max_age_s=float(max_age)))
         deadline = time.monotonic() + self._det_timeout
         while not fut.done() and time.monotonic() < deadline:
             time.sleep(0.005)
@@ -601,6 +675,13 @@ class OrchestratorNode(Node):
             return finish(False, 'detector_error')
         if r is None:
             return finish(False, 'detector_error')
+        if wrist and r.found:
+            stamp = r.stamp.sec*1_000_000_000 + r.stamp.nanosec
+            age = (self.get_clock().now().nanoseconds-stamp)/1e9
+            if r.detail == 'stub' or r.label != 'cucumber':
+                return finish(False, 'invalid_holding_evidence')
+            if stamp <= 0 or not 0 <= age <= min(self._holding_max_age, self._now()-wrist_since):
+                return finish(False, 'stale')
         return finish(bool(r.found), f'{r.label} {r.confidence:.2f}' if r.found else r.detail)
 
     def _trace(self, kind: int, plan_id: str, index: int, title: str, body: str) -> None:

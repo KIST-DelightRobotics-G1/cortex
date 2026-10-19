@@ -80,11 +80,17 @@ def frame_time(stamp_ns, ros_now_ns, received_t, max_age_s, allow_unstamped=Fals
 
 
 class PresenceWindow:
-    def __init__(self, targets, names, window_s=.6, min_confidence=.4, min_frames=3, require_latest_hit=False):
+    def __init__(self, targets, names, window_s=.6, min_confidence=.4, min_frames=3, require_latest_hit=False,
+                 check_roi=(0., 0., 1., 1.), roi_min_overlap=0.):
         if (not math.isfinite(window_s) or window_s <= 0 or
                 not math.isfinite(min_confidence) or not 0 < min_confidence <= 1 or
                 not isinstance(min_frames, int) or min_frames < 1):
             raise ValueError('invalid presence window settings')
+        if (len(check_roi) != 4 or not all(math.isfinite(v) and 0 <= v <= 1 for v in check_roi) or
+                check_roi[0] >= check_roi[2] or check_roi[1] >= check_roi[3] or
+                not math.isfinite(roi_min_overlap) or not 0 <= roi_min_overlap <= 1):
+            raise ValueError('invalid check ROI or overlap')
+        self.check_roi, self.roi_min_overlap = tuple(check_roi), roi_min_overlap
         self.targets, self.names = targets, frozenset(names)
         self.window_s, self.min_confidence, self.min_frames = window_s, min_confidence, min_frames
         self.require_latest_hit = require_latest_hit
@@ -110,6 +116,12 @@ class PresenceWindow:
                 return False
             best = {}
             for d in detections:
+                if self.roi_min_overlap > 0:
+                    x1, y1, x2, y2 = self.check_roi
+                    iw = max(0., min(x2, d.cx+d.w/2)-max(x1, d.cx-d.w/2))
+                    ih = max(0., min(y2, d.cy+d.h/2)-max(y1, d.cy-d.h/2))
+                    if d.w <= 0 or d.h <= 0 or iw*ih/(d.w*d.h) < self.roi_min_overlap:
+                        continue
                 if d.label not in best or d.confidence > best[d.label].confidence:
                     best[d.label] = d
             self._frames.append((observed_t, stamp_ns, best))
@@ -121,6 +133,7 @@ class PresenceWindow:
         if diagnostics is not None:
             diagnostics.update(window_s=self.window_s, min_frames=self.min_frames,
                                require_latest_hit=self.require_latest_hit, latest_hit=None,
+                               check_roi=self.check_roi, roi_min_overlap=self.roi_min_overlap,
                                max_candidate_confidence=None, latest_frame_age_ms=None)
 
         def finish(verdict, reason=''):

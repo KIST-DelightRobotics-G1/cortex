@@ -213,3 +213,106 @@ Keep the actual site/model/device launch arguments if used. Pass the complete
 file (startup through shutdown) and trial conditions, including the time of the
 failed instruction. Use a new filename for each run. The file can contain
 transcribed speech. Docker users should copy it out before discarding the container.
+
+## Wrist evidence before carrying subtasks (opt-in)
+
+The standard launch keeps the ego detector and can start a second instance named
+`wrist_detector_node`. Its source, `DetectionArray` topic, `CheckTarget` service,
+model and frame window are independent. `SubtaskCmd` / `SubtaskState` are unchanged.
+The existing perception executable is reused; no camera topics are hard-coded.
+
+This check is added in `planner_mode: llm` before `step_back(fridge)`,
+`close(fridge_door)` and `move_to(table)` when the orchestrator's expected
+`holding` state is `cucumber`. Each step requires its own fresh wrist check;
+a successful check before stepping back does not authorize closing or moving.
+The state comes from a matching completed pick/take_out/receive; it survives
+step_back, close, navigation, plan completion and a later command. Completed
+place/put_in/handover clears it. It is metadata,
+not visual proof. A detector miss never clears the requirement. After a Cortex
+restart the state is unknown to this mechanism (`none` initially): a standalone
+carrying command while already holding an object is not covered by this conditional check.
+
+After the executing module (VLA or nav) becomes IDLE, each PRECHECK attempt
+requires only `held_cucumber` on the wrist service for these guarded steps.
+This replaces the usual ego fridge requirement for close; it adds a wrist check
+for step_back and move_to(table). Open, pick, take_out, other destinations and
+steps without expected cucumber holding retain their existing checks. In particular,
+ordinary table navigation before picking an object still works without wrist evidence.
+Only wrist source frames captured at or after entry to this PRECHECK can
+contribute. The window still requires
+enough distinct frames, a strict majority and a latest-frame hit. Old positive
+answers are not latched across retries. Missing or unavailable wrist evidence
+blocks dispatch even if `detector_fail_open` is enabled elsewhere. The existing
+precheck timeout bounds waiting; failure reports the wrist target and ends the plan.
+
+The ego detector keeps running. When precheck logging is enabled, the orchestrator
+requests one ego `cucumber` observation per PRECHECK asynchronously for reference.
+It does not wait for that answer. An ego miss, stale frame, missing service or
+service timeout cannot block or authorize a guarded step, or consume its
+waiting budget. The auxiliary request is bounded by `detector_call_timeout_s`;
+late results keep the original plan/step context and never change execution.
+Ego evidence cannot substitute for missing wrist evidence.
+
+### Site configuration and limits
+
+The feature is off by default. Configure these sections in a copy of
+`cortex_params.yaml` (or a `detector_profile` overlay):
+
+- `orchestrator_node.ros__parameters.holding_precheck_enabled: true`
+- `holding_detector_service`: match the wrist detector's service (default
+  `/cortex/wrist_detector/check`); `holding_max_age_s` bounds source age on return.
+- Keep a positive `precheck_timeout_s` (allow time for the new frame window).
+- `wrist_detector_node.ros__parameters.camera_topic`: the site's **original right
+  wrist** stream; confirm name, transport, timestamp clock and image orientation.
+- `model`, optional `model_sha256`, `device`: a local weight and deployment device.
+  The global launch `model:=` override remains **ego-only**. `device:=` applies to
+  both detectors. Models are not stored in the repository or downloaded at launch.
+- `check_roi`: optional `[left, top, right, bottom]` in normalized full-image
+  coordinates. `roi_min_overlap: 0.0` disables the spatial filter. To enable it,
+  calibrate the region and set a positive overlap: it is intersection area
+  divided by cucumber box area. A candidate is filtered **before** choosing the
+  best box of its class; rejected candidates still count as missed frames. The
+  published DetectionArray retains all boxes for debugging.
+- Calibrate `default_min_confidence`, `infer_conf`, `min_frames` and `window_s` on
+  separately recorded positive and empty-gripper videos. `infer_conf` must not
+  exceed the desired check threshold. Keep `require_latest_hit: true` and
+  `allow_unstamped: false` for this branch's wrist check.
+
+Launch rejects missing weights, missing/shared camera topics or services, a demo
+stub, inconsistent target mapping, or invalid ROI coordinates/overlap. The empty
+camera/model fields in the shipped YAML must be supplied before enabling the guard.
+The wrist default check threshold is 0.70, with `infer_conf: 0.25` and no ROI filter;
+the ego detector keeps its separate 0.25 check threshold. The wrist setting is an
+offline-video candidate, not a validated grasp detector for all camera conditions.
+Confirm it on original site recordings before robot use.
+
+`held_cucumber` currently means **temporal cucumber evidence in the configured
+wrist view (or ROI when enabled)**, not a measured gripping force or a trained
+held/not-held state.
+The existing model produced persistent empty-gripper false positives in the
+supplied composite clip. ROI and voting cannot prove holding or eliminate those
+errors. The two-camera connection can be tested now; enabling it for robot motion
+requires validation with original wrist recordings (held, empty, nearby but not
+held, and release) and, if needed, a fine-tuned model. No automatic ego fallback
+substitutes for missing wrist evidence.
+
+First verify inputs without the orchestrator:
+
+```bash
+ros2 launch cortex_bringup cortex.launch.py params_file:=/path/to/site.yaml detector_only:=true
+ros2 service call /cortex/wrist_detector/check cortex_msgs/srv/CheckTarget "{target: held_cucumber}"
+```
+
+A direct service call reads the rolling window; the orchestrator additionally
+restricts evidence to the current PRECHECK. After calibration, run the same
+standard launch without `detector_only:=true` to test the whole path. Two model
+instances use additional GPU memory and inference time; measure on the target
+RTX 4090 alongside VLA rather than assuming the earlier single-camera latency.
+
+Logs use the existing `logging.yaml` / `/cortex/events` / session JSONL recorder.
+`wrist_detector_node` emits `YOLO_CONFIG` and `YOLO_CHECK`, including ROI settings;
+`PRECHECK_RESULT` identifies `source: right_wrist` and `target: held_cucumber`.
+The advisory ego result uses `PRECHECK_AUXILIARY`, `source: ego` and
+`required: false`; it may be logged after `SUBTASK_SENT`. Only the wrist result
+and the executor's `PRECHECK_STATE` authorize these guarded steps. Ego checks for
+other subtasks still use `PRECHECK_RESULT` and remain required as before.

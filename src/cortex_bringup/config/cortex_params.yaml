@@ -100,6 +100,11 @@ orchestrator_node:
     precheck_timeout_s: 1.0
     say_on_done: true                   # speak actions.yaml done_say when a step finishes (last: plan_done)
     precheck_retry_s: 0.1
+    # Opt-in: while holding cucumber, step_back(fridge), close(fridge_door), and
+    # move_to(table) require wrist evidence before each start; ego is advisory.
+    holding_precheck_enabled: false
+    holding_detector_service: /cortex/wrist_detector/check
+    holding_max_age_s: 0.6
     tts_prefetch_topic: /cortex/tts/prefetch
     tts_warmup_topic: /cortex/tts/warmup
     # demo-only steps inserted between plan lines (config/plan_rewrites.yaml). '' = off.
@@ -141,6 +146,32 @@ detector_node:
     # target (actions.yaml vocabulary key) -> YOLO class names ('|' separates alternatives)
     target_keys:    [fridge_door,  fridge,       cucumber, user]
     target_classes: [refrigerator, refrigerator, cucumber, person]
+
+# Launched by cortex.launch.py only when holding_precheck_enabled is true.
+# Supply the site's original wrist topic and a locally validated weight before enabling.
+wrist_detector_node:
+  ros__parameters:
+    camera_topic: ''
+    camera_transport: h264
+    detections_topic: /cortex/wrist_detector/detections
+    service: /cortex/wrist_detector/check
+    backend: yolo
+    model: ''
+    model_sha256: ''
+    device: '0'
+    rate_hz: 8.0
+    window_s: 0.6
+    default_min_confidence: 0.70  # candidate from offline wrist replay; validate on site
+    infer_conf: 0.25
+    imgsz: 640
+    min_frames: 3
+    require_latest_hit: true
+    allow_unstamped: false
+    target_keys: [held_cucumber]
+    target_classes: [cucumber]
+    # Optional ROI: normalised [left, top, right, bottom]. Overlap 0 disables filtering.
+    check_roi: [0.0, 0.0, 1.0, 1.0]
+    roi_min_overlap: 0.0  # intersection / cucumber box area; set >0 to enable ROI filtering
 
 gui_bridge_node:
   ros__parameters:

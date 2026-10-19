@@ -70,3 +70,25 @@ def test_demo_launch_builds_without_model(tmp_path):
     demo = runpy.run_path(str(LAUNCH/'llm_demo.launch.py'))
     description = demo['generate_launch_description']()
     assert description.entities
+
+
+def test_wrist_launch_adds_a_separate_detector_and_keeps_ego(tmp_path):
+    import yaml
+    main = runpy.run_path(str(LAUNCH/'cortex.launch.py'))
+    ctx = context(tmp_path)
+    wrist_weight = tmp_path/'wrist.pt'
+    wrist_weight.touch()
+    overlay = tmp_path/'wrist.yaml'
+    overlay.write_text(yaml.safe_dump({
+        'orchestrator_node': {'ros__parameters': {'holding_precheck_enabled': True}},
+        'wrist_detector_node': {'ros__parameters': {'camera_topic': '/test/wrist/image',
+            'model': str(wrist_weight), 'check_roi': [0., 0., 1., 1.], 'roi_min_overlap': 0.}}}))
+    ctx.launch_configurations['detector_profile'] = str(overlay)
+    nodes = main['_nodes'](ctx)
+    detectors = [n for n in nodes if n.node_executable == 'detector_node']
+    assert len(nodes) == 9 and len(detectors) == 2
+    values = [v.value for v in detectors[1]._Node__parameters[0].values() if hasattr(v, 'value')]
+    assert '/test/wrist/image' in values and str(wrist_weight) in values
+    assert '/cortex/wrist_detector/check' in values and 'cpu' in values
+    ctx.launch_configurations['detector_only'] = 'true'
+    assert len(main['_nodes'](ctx)) == 2

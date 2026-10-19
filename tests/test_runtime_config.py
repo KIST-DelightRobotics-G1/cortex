@@ -103,3 +103,68 @@ def test_default_logging_file_prefers_the_mounted_host_copy(monkeypatch, tmp_pat
     assert default_logging_file(tmp_path) == str(tmp_path/'config'/'logging.yaml')
     monkeypatch.setenv('CORTEX_LOGGING_FILE', '/workspace/cortex/host_config/logging.yaml')
     assert default_logging_file(tmp_path) == '/workspace/cortex/host_config/logging.yaml'
+
+
+def wrist_site(tmp_path):
+    spec = yaml.safe_load(BASE.read_text())
+    spec['orchestrator_node']['ros__parameters']['holding_precheck_enabled'] = True
+    wrist = spec['wrist_detector_node']['ros__parameters']
+    weight = tmp_path/'wrist.pt'
+    weight.touch()
+    wrist.update(camera_topic='/test/right_wrist/image', model=str(weight),
+                 check_roi=[.4, .4, .9, .9], roi_min_overlap=.5)
+    return spec
+
+
+def test_wrist_opt_in_and_layered_configuration(tmp_path):
+    from cortex_bringup.runtime_config import wrist_detector_parameters
+    assert wrist_detector_parameters(BASE) is None
+    spec = wrist_site(tmp_path)
+    site = tmp_path/'site.yaml'
+    site.write_text(yaml.safe_dump(spec))
+    params = wrist_detector_parameters(site, device='cpu')
+    assert params['device'] == 'cpu' and params['model'] == str(tmp_path/'wrist.pt')
+    overlay = tmp_path/'disable.yaml'
+    overlay.write_text('orchestrator_node:\n  ros__parameters:\n    holding_precheck_enabled: false\n')
+    assert wrist_detector_parameters(site, overlay) is None
+
+
+@pytest.mark.parametrize('node,key,value', [
+    ('orchestrator_node', 'holding_precheck_enabled', 'true'),
+    ('orchestrator_node', 'holding_detector_service', '/wrong'),
+    ('orchestrator_node', 'precheck_timeout_s', 0.),
+    ('orchestrator_node', 'holding_max_age_s', float('nan')),
+    ('orchestrator_node', 'planner_mode', 'scenario'),
+    ('wrist_detector_node', 'camera_topic', ''),
+    ('wrist_detector_node', 'camera_topic', '/kist/camera/head/color/h264'),
+    ('wrist_detector_node', 'service', '/cortex/detector/check'),
+    ('wrist_detector_node', 'detections_topic', '/cortex/detections'),
+    ('wrist_detector_node', 'backend', 'always'),
+    ('wrist_detector_node', 'allow_unstamped', True),
+    ('wrist_detector_node', 'require_latest_hit', False),
+    ('wrist_detector_node', 'check_roi', [.8, .2, .3, .9]),
+    ('wrist_detector_node', 'roi_min_overlap', -.1),
+    ('wrist_detector_node', 'target_keys', ['cucumber']),
+    ('wrist_detector_node', 'model', '/absent.pt'),
+])
+def test_incomplete_or_misrouted_wrist_config_fails_before_starting_nodes(tmp_path, node, key, value):
+    from cortex_bringup.runtime_config import wrist_detector_parameters
+    spec = wrist_site(tmp_path)
+    spec[node]['ros__parameters'][key] = value
+    site = tmp_path/'site.yaml'
+    site.write_text(yaml.safe_dump(spec))
+    with pytest.raises(ValueError):
+        wrist_detector_parameters(site)
+
+
+def test_wrist_full_view_candidate_keeps_separate_camera_thresholds(tmp_path):
+    from cortex_bringup.runtime_config import node_parameters, wrist_detector_parameters
+    spec = wrist_site(tmp_path)
+    wrist = spec['wrist_detector_node']['ros__parameters']
+    wrist.update(check_roi=[0., 0., 1., 1.], roi_min_overlap=0.)
+    site = tmp_path/'site.yaml'
+    site.write_text(yaml.safe_dump(spec))
+    params = wrist_detector_parameters(site)
+    assert params['default_min_confidence'] == .7
+    assert params['infer_conf'] == .25 and params['roi_min_overlap'] == 0.
+    assert node_parameters(site, '', 'detector_node')['default_min_confidence'] == .25
