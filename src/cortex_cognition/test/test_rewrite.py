@@ -24,8 +24,8 @@ def actions(h):
 
 # --- matching -----------------------------------------------------------------------
 
-def test_shipped_file_has_auto_open_and_the_two_fridge_rules():
-    assert RW.names == ['auto_open', 'fridge_reach', 'fridge_back_off']
+def test_shipped_file_has_auto_open_and_the_fridge_rules():
+    assert RW.names == ['auto_open', 'fridge_door_reach', 'fridge_reach', 'fridge_back_off']
     assert RW.doors['fridge'] == 'fridge_door'
 
 
@@ -36,6 +36,8 @@ def test_pair_match_and_built_step():
     assert ins.title == '냉장고 앞으로 다가가기'
     [ins] = RW.between('pick', ['cucumber'], 'close', ['fridge_door'])
     assert ins.instruction == 'Step back from the refrigerator.' and ins.title == '냉장고에서 물러나기'
+    [ins] = RW.between('move_to', ['fridge'], 'open', ['fridge_door'])
+    assert (ins.rule, ins.action, ins.args, ins.say) == ('fridge_door_reach', 'approach', ['fridge'], '')
 
 
 def test_leading_args_match_take_out_too():
@@ -77,12 +79,14 @@ def test_streamed_fridge_plan_gets_both_inserts_and_renumbers():
     h = Harness(rewriter=RW)
     h.x.heard('p1', '냉장고에서 오이 가져와줘')
     h.plan('p1', FRIDGE)
-    assert actions(h) == [(0, 'move_to'), (1, 'open'), (2, 'approach'), (3, 'pick'),
-                          (4, 'step_back'), (5, 'close'), (6, 'move_to'), (7, 'handover')]
-    assert h.x.count == 8
-    assert (ex.T_PLAN_END, 8, '계획 8단계') in h.traces
+    assert actions(h) == [(0, 'move_to'), (1, 'approach'), (2, 'open'), (3, 'approach'),
+                          (4, 'pick'), (5, 'step_back'), (6, 'close'), (7, 'move_to'),
+                          (8, 'handover')]
+    assert h.x.count == 9
+    assert (ex.T_PLAN_END, 9, '계획 9단계') in h.traces
     lines = [(i, t) for k, i, t in h.traces if k == ex.T_PLAN_LINE]
-    assert (2, '냉장고 앞으로 다가가기') in lines and (4, '냉장고에서 물러나기') in lines
+    assert (1, '냉장고 앞으로 다가가기') in lines and (3, '냉장고 앞으로 다가가기') in lines
+    assert (5, '냉장고에서 물러나기') in lines
 
 
 def test_inserted_steps_run_in_order_silently():
@@ -94,10 +98,10 @@ def test_inserted_steps_run_in_order_silently():
         assert h.cmds[-1] == (which, i, a, 'p1')
         says_before = len(h.says)
         run_step(h, which, 'p1', i)
-        if i + 1 < 8 and actions(h)[i + 1][1] in ('approach', 'step_back'):
+        if i + 1 < len(actions(h)) and actions(h)[i + 1][1] in ('approach', 'step_back'):
             assert len(h.says) == says_before     # nothing spoken for the next (inserted) step
     assert h.x.phase == 'IDLE' and ex.T_PLAN_DONE in h.kinds()
-    assert (ex.T_STEP_START, 2, '냉장고 앞으로 다가가기') in h.traces   # NOW shows the title
+    assert (ex.T_STEP_START, 1, '냉장고 앞으로 다가가기') in h.traces   # NOW shows the title
 
 
 def test_insert_is_sent_with_its_instruction():
@@ -107,7 +111,6 @@ def test_insert_is_sent_with_its_instruction():
     h.x.heard('p1', 'x')
     h.plan('p1', FRIDGE)
     run_step(h, 'nav', 'p1', 0)
-    run_step(h, 'vla', 'p1', 1)
     assert sent[-1] == ('approach', 'Approach the refrigerator.')
 
 
@@ -115,12 +118,15 @@ def test_line_arriving_while_waiting_gets_its_insert_first():
     h = Harness(rewriter=RW)
     h.x.heard('p1', 'x')
     h.x.on_step('p1', SUB, 0, 'move_to', ['fridge'], '냉장고로 갑니다.', '', '')
-    h.x.on_step('p1', SUB, 1, 'open', ['fridge_door'], '문을 엽니다.', '', '')
     run_step(h, 'nav', 'p1', 0)
+    assert h.x._st == 'WAIT_STEP'                 # open not streamed yet
+    h.x.on_step('p1', SUB, 1, 'open', ['fridge_door'], '문을 엽니다.', '', '')
+    assert h.cmds[-1] == ('vla', 1, 'approach', 'p1')   # the insert goes first
     run_step(h, 'vla', 'p1', 1)
+    run_step(h, 'vla', 'p1', 2)
     assert h.x._st == 'WAIT_STEP'                 # pick not streamed yet
     h.x.on_step('p1', SUB, 2, 'pick', ['cucumber'], '오이를 집습니다.', '', '')
-    assert h.cmds[-1] == ('vla', 2, 'approach', 'p1')   # the insert goes first
+    assert h.cmds[-1] == ('vla', 3, 'approach', 'p1')
 
 
 def test_without_rewriter_the_plan_is_untouched():
@@ -148,8 +154,8 @@ def test_preempting_plan_is_rewritten_too():
         h.x.on_step('p2', SUB, i, a, args, f'{a} say', '', '')
     h.x.on_step('p2', END, len(FRIDGE), '', [], '', '', '')
     h.state('nav', ex.IDLE, '', 0, 'cancelled')   # p1 stopped → p2 starts
-    assert h.x.plan_id == 'p2' and h.x.count == 8
-    assert [a for _, a in actions(h)][2] == 'approach'
+    assert h.x.plan_id == 'p2' and h.x.count == 9
+    assert [a for _, a in actions(h)][1:4] == ['approach', 'open', 'approach']
     assert planner.exec_of(CFG, 'pick') == 'vla'  # sanity: fixtures still line up
 
 
@@ -161,7 +167,9 @@ NO_OPEN = [('move_to', ['fridge']), ('pick', ['cucumber']), ('close', ['fridge_d
 
 
 def test_missing_open_after_move_to_is_inserted_with_its_say():
-    opened, reach = RW.between('move_to', ['fridge'], 'pick', ['cucumber'])
+    door_reach, opened, reach = RW.between('move_to', ['fridge'], 'pick', ['cucumber'])
+    # (move_to, open) is matched as if the LLM had written the open
+    assert (door_reach.rule, door_reach.action) == ('fridge_door_reach', 'approach')
     assert (opened.rule, opened.action, opened.args) == ('auto_open', 'open', ['fridge_door'])
     assert opened.say == '냉장고 문을 엽니다.' and opened.exec == 'vla'
     assert opened.title == '냉장고 문 열기'
@@ -200,11 +208,14 @@ def test_plan_without_open_runs_with_open_and_says_it():
     h = Harness(rewriter=RW)
     h.x.heard('p1', '냉장고 가서 오이 가져와')
     h.plan('p1', NO_OPEN)
-    assert actions(h) == [(0, 'move_to'), (1, 'open'), (2, 'approach'), (3, 'pick'),
-                          (4, 'step_back'), (5, 'close'), (6, 'move_to'), (7, 'handover')]
-    assert h.x.count == 8
+    assert actions(h) == [(0, 'move_to'), (1, 'approach'), (2, 'open'), (3, 'approach'),
+                          (4, 'pick'), (5, 'step_back'), (6, 'close'), (7, 'move_to'),
+                          (8, 'handover')]
+    assert h.x.count == 9
     run_step(h, 'nav', 'p1', 0)
-    assert h.cmds[-1] == ('vla', 1, 'open', 'p1')
-    assert h.says[-1] == '냉장고 문을 엽니다.'             # the inserted open speaks
+    assert h.cmds[-1] == ('vla', 1, 'approach', 'p1')
     run_step(h, 'vla', 'p1', 1)
-    assert h.cmds[-1] == ('vla', 2, 'approach', 'p1') and h.says[-1] == '냉장고 문을 엽니다.'   # approach silent
+    assert h.cmds[-1] == ('vla', 2, 'open', 'p1')
+    assert h.says[-1] == '냉장고 문을 엽니다.'             # the inserted open speaks
+    run_step(h, 'vla', 'p1', 2)
+    assert h.cmds[-1] == ('vla', 3, 'approach', 'p1') and h.says[-1] == '냉장고 문을 엽니다.'   # approach silent
