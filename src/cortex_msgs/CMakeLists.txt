@@ -20,6 +20,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TraceEvent.msg"
   "msg/Detection.msg"
   "msg/DetectionArray.msg"
+  "msg/ObjectPresence.msg"
+  "msg/GripperPresence.msg"
   "srv/CheckTarget.srv"
   DEPENDENCIES std_msgs builtin_interfaces
 )

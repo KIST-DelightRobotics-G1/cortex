@@ -75,6 +75,8 @@ phrases:
   unknown_place:      "그곳은 아직 갈 수 없습니다."
   unsupported_action: "그 동작은 아직 할 수 없습니다."
   not_visible:        "{ko}{i} 보이지 않습니다."
+  not_holding:        "{ko}{eul} 들고 있지 않아 작업을 중단합니다."   # 운반 중 단계 시작 전 그리퍼 확인 실패
+  object_lost:        "{ko}{eul} 놓쳤습니다. 작업을 중단합니다."      # 운반 중 그리퍼에서 사라짐
   step_failed:        "{ko}{eul} 하지 못했습니다."
   not_accepted:       "{ko}{eul} 시작하지 못했습니다."
   module_lost:        "{ko} 모듈이 응답하지 않습니다."

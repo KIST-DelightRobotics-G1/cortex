@@ -15,6 +15,9 @@
 #                      subtask   SUBTASK_SENT, WAIT_IDLE, STUB_DISPATCH
 #                      state     ROBOT_STATE
 #                      config    VLA_PROMPT, TTS_WARMUP
+#                      hold      HOLD_MONITOR (config / start / stop), HOLD_STATE (gripper state of
+#                                the held object, on change), HOLD_STATS (share of each state per
+#                                holding window), HOLD_UNKNOWN, HOLD_LOST
 #   detector_node      config    YOLO_CONFIG (once at start)
 #                      check     YOLO_CHECK (each answer + camera fps · infer Hz/ms · drops at that
 #                                moment; the same answer repeated within 2 s is not printed)
@@ -44,7 +47,7 @@ session_log:
   end_timeout_s: 120.0   # close a session that never got its SESSION_END
 
 nodes:
-  orchestrator_node: {events: [session, plan, precheck, subtask]}
+  orchestrator_node: {events: [session, plan, precheck, subtask, hold]}
   detector_node:     {events: [config, check]}
   stt_node:          {events: [transcript]}
   # llm_node:        {events: [request, line, timing]}
