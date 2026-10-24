@@ -28,6 +28,14 @@ Two rules keep every module handled the same way:
     The one graceful stop is a plan error mid-plan: the running step finishes
     (bounded by its step timeout, then cancelled) and nothing after it starts.
 
+Holding (Params.held_mode): from a pick-type step's DONE until a step that lets
+the same object go, the object should stay in the gripper. 'enforce': a step does
+not start unless the gripper reads PRESENT (on top of its CheckTarget precheck),
+and an ABSENT while a step runs cancels it and ends the plan. 'log': the same
+checks only log HOLD_LOST (once per step) and the plan goes on (hold.py, docs/
+gripper_presence.md). What is held comes from Ports.held_object, what is seen
+from Ports.gripper — this module only decides what a mismatch means.
+
 Phases
     IDLE       nothing running
     PLANNING   PlanRequest sent, waiting for the first PlanStep (or a reply)
@@ -43,7 +51,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from . import planner
+from . import hold, planner
 
 # SubtaskState.status values (kept numeric here so the module has no ROS import)
 IDLE, RUNNING, DONE, FAILED = 0, 1, 2, 3
@@ -72,6 +80,8 @@ class Params:
     precheck_retry_s: float = 0.1        # rate-limited by the executor tick
     detector_fail_open: bool = True       # detector unavailable → proceed (only "not found" blocks)
     say_on_done: bool = False             # speak done_say when a step finishes (plan_done for the last)
+    held_mode: str = 'log'                # held object vs gripper: 'log' records, 'enforce' blocks / stops
+    held_unknown: str = 'warn'            # enforce, gripper UNKNOWN: 'warn' proceeds, 'fail' blocks / stops
 
 
 @dataclass
@@ -85,6 +95,9 @@ class Ports:
     trace: Callable[[int, str, int, str, str], None]      # (kind, plan_id, index, title, body)
     status: Callable[[int, str, str, int, int, str], None]  # (state, task, subtask, idx, count, detail)
     log: Callable[..., None] = lambda topic, event, **fields: None   # console event (EventLog)
+    held_object: Callable[[], str] = lambda: 'none'          # what a finished pick put in the hand
+    gripper: Callable[[str], tuple] = lambda key: (hold.UNSUPPORTED, '')   # key → (state, detail)
+    object_lost: Callable[[str], None] = lambda key: None    # the held object is gone
 
 
 @dataclass
@@ -120,6 +133,10 @@ class Executor:
         if (not math.isfinite(self.prm.precheck_timeout_s) or self.prm.precheck_timeout_s < 0
                 or not math.isfinite(self.prm.precheck_retry_s) or self.prm.precheck_retry_s <= 0):
             raise ValueError('invalid precheck retry settings')
+        if self.prm.held_mode not in ('log', 'enforce'):
+            raise ValueError("held_mode must be 'log' or 'enforce'")
+        if self.prm.held_unknown not in ('warn', 'fail'):
+            raise ValueError("held_unknown must be 'warn' or 'fail'")
         self.mod = {'nav': ModuleView(), 'vla': ModuleView()}
         self._sessions: dict[str, tuple] = {}   # plan_id → (utterance, start time); survives _reset
         self._reset()
@@ -147,6 +164,7 @@ class Executor:
         self._stop_reason = ''
         self._confirm_summary = ''
         self._offset = 0                # steps inserted by rewrites so far (LLM index → executor index)
+        self._held_reported = False     # log mode: HOLD_LOST already logged for the current step
 
     @property
     def state_for_llm(self) -> str:
@@ -393,6 +411,8 @@ class Executor:
             return
         if self.phase == 'RUNNING' and st is not None:
             m = self.mod[st.exec]
+            if self._st in ('ACCEPT', 'RUN') and self._held_check_running(st):
+                return                                   # the held object is gone: step stopped
             if self._st == 'WAIT_READY':
                 if now - self._t > self.prm.safe_stop_timeout_s.get(st.exec, 10.0):
                     # rule 1/2: the module is still busy — put nothing on top of it
@@ -505,6 +525,13 @@ class Executor:
             results.append((target, found, detail))
         blocked = [(t, d or 'not_visible') for t, found, d in results
                    if not found and not (d and self.prm.detector_fail_open)]
+        held = self._held(st)
+        grip = self.p.gripper(held) if held else (hold.UNSUPPORTED, '')
+        if self.prm.held_mode == 'enforce':
+            if grip[0] == hold.ABSENT:
+                blocked.append((held, 'not_holding'))
+            elif grip[0] == hold.UNKNOWN and self.prm.held_unknown == 'fail':
+                blocked.append((held, f'gripper_{grip[1] or "unknown"}'))
         if blocked:
             terminal_reasons = ('unsupported_class', 'unknown_target', 'invalid_request')
             target, reason = next(((t, d) for t, d in blocked if d in terminal_reasons), blocked[0])
@@ -526,6 +553,14 @@ class Executor:
             ko = planner.ko_name(self.cfg, target)
             title = f'{ko} 확인됨' if found else f'{ko} 확인 불가 · 진행'
             self.p.trace(T_GROUND, self.plan_id, st.index, title, detail)
+        if grip[0] in (hold.PRESENT, hold.UNKNOWN, hold.ABSENT):
+            ko = planner.ko_name(self.cfg, held)
+            title = {hold.PRESENT: f'{ko} 들고 있음', hold.UNKNOWN: f'{ko} 들고 있는지 확인 불가 · 진행',
+                     hold.ABSENT: f'{ko} 안 보임 · 기록만'}[grip[0]]
+            self.p.trace(T_GROUND, self.plan_id, st.index, title, f'gripper {grip[1]}')
+        self._held_reported = grip[0] == hold.ABSENT       # only reachable in log mode
+        if self._held_reported:
+            self._log_lost('precheck', st, held, grip[0], grip[1], stopped=False)
         self._st, self._t, self._retries = 'ACCEPT', self.p.now(), 0
         self._busy_seen = self._final_traced = False
         self.p.send_cmd(st.exec, st, self.plan_id)
@@ -538,10 +573,52 @@ class Executor:
         ko = planner.ko_name(self.cfg, target)
         title = f'{ko} 확인 시간 초과' if timeout else f'{ko} 확인 실패'
         self.p.trace(T_GROUND, self.plan_id, self.cur, title, detail)
-        key = 'not_visible' if detail == 'not_visible' else 'precheck_unavailable'
+        key = detail if detail in ('not_visible', 'not_holding') else 'precheck_unavailable'
+        if detail == 'not_holding':                  # enforce: it is not in the hand any more
+            self._log_lost('precheck', self._cur(), target, hold.ABSENT, detail, stopped=True)
+            self.p.object_lost(target)
         self.p.say(planner.phrase(self.cfg, key, target))
         reason = 'precheck_timeout' if timeout else 'precheck'
         self._abandon(f'{reason}: {target}: {detail}')
+
+    def _held(self, st: Optional[Step]) -> str:
+        """The object st must keep in the gripper, or ''. Steps that take something or let
+        the held object go are not watched: their own success says what is in the hand."""
+        if st is None:
+            return ''
+        key = self.p.held_object()
+        if not key or key == 'none' or st.action in hold.PICKS:
+            return ''
+        if st.action in hold.PUTS and st.args[:1] == [key]:
+            return ''
+        return key
+
+    def _held_check_running(self, st: Step) -> bool:
+        """While a step runs, the held object must stay. True if the step was stopped."""
+        held = self._held(st)
+        if not held:
+            return False
+        state, detail = self.p.gripper(held)
+        if self.prm.held_mode == 'log':
+            if state == hold.ABSENT and not self._held_reported:
+                self._held_reported = True
+                self._log_lost('running', st, held, state, detail, stopped=False)
+            return False
+        if not (state == hold.ABSENT or (state == hold.UNKNOWN and self.prm.held_unknown == 'fail')):
+            return False
+        self._log_lost('running', st, held, state, detail, stopped=True)
+        if state == hold.ABSENT:
+            self.p.object_lost(held)                 # UNKNOWN: it may well still be in the hand
+            self._fail_step('object_lost', say_key='object_lost', cancel=True, subject=held)
+        else:
+            self._fail_step(f'gripper_{detail}', say_key='precheck_unavailable', cancel=True,
+                            subject=held)
+        return True
+
+    def _log_lost(self, stage: str, st: Step, held: str, state: str, detail: str,
+                  stopped: bool) -> None:
+        self.p.log('hold', 'HOLD_LOST', plan_id=self.plan_id, index=st.index, action=st.action,
+                   object=held, stage=stage, state=state, detail=detail, stopped=stopped)
 
     def _say_done(self, st: Step) -> None:
         """A step finished well. Steps that start silently (demo inserts) end silently too;
@@ -569,11 +646,13 @@ class Executor:
         else:
             self._st, self._t = 'WAIT_STEP', self.p.now()
 
-    def _fail_step(self, reason: str, say_key: str = 'step_failed', cancel: bool = False) -> None:
+    def _fail_step(self, reason: str, say_key: str = 'step_failed', cancel: bool = False,
+                   subject: str = '') -> None:
         st = self._cur()
         self.p.trace(T_STEP_FAILED, self.plan_id, st.index, reason, '')
         self._final_traced = True
-        subject = {'nav': '이동', 'vla': '조작'}[st.exec] if say_key == 'module_lost' else st.title
+        if not subject:
+            subject = {'nav': '이동', 'vla': '조작'}[st.exec] if say_key == 'module_lost' else st.title
         self.p.say(planner.phrase(self.cfg, say_key, subject))
         if cancel:
             # rule 2: the module is still acting — cancel it and see it reach IDLE

@@ -41,14 +41,15 @@ from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
-from cortex_msgs.msg import (ActionCmd, PlanRequest, PlanStep, SubtaskCmd, SubtaskState,
-                             TaskStatus, TraceEvent)
+from cortex_msgs.msg import (ActionCmd, GripperPresence, PlanRequest, PlanStep, SubtaskCmd,
+                             SubtaskState, TaskStatus, TraceEvent)
 from cortex_msgs.srv import CheckTarget
 from cortex_common.events import EventLog
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
 from . import executor as ex
+from . import hold
 from . import planner
 from . import rewrite
 
@@ -296,6 +297,11 @@ class OrchestratorNode(Node):
         self.declare_parameter('tts_prefetch_topic', '/cortex/tts/prefetch')
         self.declare_parameter('tts_warmup_topic', '/cortex/tts/warmup')
         self.declare_parameter('ack_phrase', '네.')      # spoken the moment a request goes to the LLM; '' = off
+        # holding: the picked object must stay in the gripper until it is put down (hold.py)
+        self.declare_parameter('held_monitor_mode', 'log')   # log | enforce
+        self.declare_parameter('gripper_presence_topic', '/cortex/gripper_presence')
+        self.declare_parameter('held_heartbeat_timeout_s', 1.0)
+        self.declare_parameter('held_unknown', 'warn')   # warn | fail
 
         g = self.get_parameter
         # Console events (logging.yaml → log_events). Topic → events:
@@ -303,7 +309,9 @@ class OrchestratorNode(Node):
         #   plan: PLAN_STEP PLAN_END PLAN_CANCEL PLAN_IGNORED REWRITE SCENARIO
         #   precheck: PRECHECK_CONFIG PRECHECK_RESULT PRECHECK_STATE
         #   subtask: SUBTASK_SENT WAIT_IDLE STUB_DISPATCH · state: ROBOT_STATE · config: VLA_PROMPT TTS_WARMUP
-        self.events = EventLog(self, known=('session', 'plan', 'precheck', 'subtask', 'state', 'config'))
+        #   hold: HOLD_CONFIG HOLD_START HOLD_UNKNOWN HOLD_LOST HOLD_STATS · hold_trace: HOLD_STATE
+        self.events = EventLog(self, known=('session', 'plan', 'precheck', 'subtask', 'state', 'config',
+                                            'hold', 'hold_trace'))
         self._last_precheck = {}         # target -> last PRECHECK_RESULT printed (repeat suppression)
         scenario_dir = g('scenario_dir').value
         tick_hz = float(g('tick_rate_hz').value)
@@ -396,6 +404,11 @@ class OrchestratorNode(Node):
         self.det_client = self.create_client(CheckTarget, g('detector_service').value,
                                              callback_group=self._det_grp)
         self._det_timeout = float(g('detector_call_timeout_s').value)
+        # What the gripper camera sees (detector) vs. what we should hold (self.holding).
+        self.gripper = hold.GripperView(float(g('held_heartbeat_timeout_s').value))
+        self._hold_stats = None          # hold.HoldStats while an object should be in the hand
+        self.create_subscription(GripperPresence, g('gripper_presence_topic').value,
+                                 self._on_gripper, 10, callback_group=grp)
 
         prm = ex.Params(
             accept_timeout_s=float(g('accept_timeout_s').value),
@@ -411,6 +424,8 @@ class OrchestratorNode(Node):
             say_on_done=bool(g('say_on_done').value),
             precheck_timeout_s=float(g('precheck_timeout_s').value),
             precheck_retry_s=float(g('precheck_retry_s').value),
+            held_mode=str(g('held_monitor_mode').value),
+            held_unknown=str(g('held_unknown').value),
         )
         ports = ex.Ports(
             now=self._now,
@@ -422,6 +437,9 @@ class OrchestratorNode(Node):
             trace=self._trace,
             status=self._status_llm,
             log=self.events,
+            held_object=lambda: self.holding,
+            gripper=lambda key: self.gripper.state(key, self._now()),
+            object_lost=lambda key: self._set_holding('none', 'lost'),
         )
         self.rewriter = rewrite.Rewriter.load(g('plan_rewrites_path').value, self.cfg)
         self._load_vla_prompts(g('vla_prompts_path').value)
@@ -431,12 +449,70 @@ class OrchestratorNode(Node):
                     precheck_timeout_s=prm.precheck_timeout_s,
                     precheck_retry_s=prm.precheck_retry_s,
                     detector_fail_open=prm.detector_fail_open)
+        self.events('hold', 'HOLD_CONFIG', mode=prm.held_mode,
+                    gripper_topic=g('gripper_presence_topic').value,
+                    heartbeat_timeout_s=self.gripper.timeout_s, unknown=prm.held_unknown)
         # 100 ms absence monitor (accept / stale / step timeouts); everything else is event-driven.
-        self.create_timer(0.1, self._exec.tick, callback_group=grp)
+        self.create_timer(0.1, self._tick_llm, callback_group=grp)
         self.get_logger().info(
             f'llm mode: {len(self.cfg["actions"])} actions, '
             f'{len(self.cfg["nav"]["places"])} places, detector={g("detector_service").value}, '
             f'plan rewrites={self.rewriter.names or "off"}')
+
+    def _tick_llm(self) -> None:
+        self._sample_hold()
+        self._exec.tick()
+
+    # --- holding -------------------------------------------------------------
+    def _on_gripper(self, m: GripperPresence) -> None:
+        self.gripper.update(self._now(), m.camera_ok,
+                            {o.key: (hold.STATE_NAME.get(o.state, hold.UNKNOWN), o.confidence)
+                             for o in m.objects})
+        self._sample_hold()
+
+    # Console (hold): a holding window prints HOLD_START and HOLD_STATS, plus HOLD_UNKNOWN once
+    # per reason and HOLD_LOST once per step — never per frame. Every state change is HOLD_STATE
+    # under hold_trace: recorded in the session jsonl, off on the console.
+    def _sample_hold(self) -> None:
+        """Feed HoldStats, plan or no plan."""
+        stats = self._hold_stats
+        if stats is None:
+            if self.holding != 'none' and self._exec.phase == 'IDLE':
+                self._start_hold('resumed')          # the put did not happen: still in the hand
+            return
+        now = self._now()
+        state, detail = self.gripper.state(stats.key, now)
+        new_why = state == hold.UNKNOWN and detail not in stats.unknown_why
+        if stats.sample(now, state, detail):
+            self.events('hold_trace', 'HOLD_STATE', object=stats.key, state=state, detail=detail,
+                        plan_id=self._exec.plan_id, phase=self._exec.phase)
+        if new_why:
+            self.events('hold', 'HOLD_UNKNOWN', object=stats.key, detail=detail,
+                        plan_id=self._exec.plan_id)
+
+    def _set_holding(self, new: str, why: str) -> None:
+        """holding changes here only. A holding window (and its HoldStats) runs from a pick's
+        DONE until the object is let go, lost, or replaced."""
+        if new == self.holding:
+            return
+        self._end_hold(why)
+        self.holding = new
+        self.events('state', 'ROBOT_STATE', at=self.at, holding=self.holding)
+        if new != 'none':
+            self._start_hold(why)
+
+    def _start_hold(self, why: str) -> None:
+        now = self._now()
+        stats = self._hold_stats = hold.HoldStats(self.holding, now)
+        state, detail = self.gripper.state(stats.key, now)
+        stats.sample(now, state, detail)
+        self.events('hold', 'HOLD_START', object=stats.key, reason=why, state=state, detail=detail,
+                    plan_id=self._exec.plan_id)
+
+    def _end_hold(self, why: str) -> None:
+        stats, self._hold_stats = self._hold_stats, None
+        if stats is not None:
+            self.events('hold', 'HOLD_STATS', reason=why, **stats.summary(self._now()))
 
     def _warm_tts_cache(self) -> None:
         """Every fixed phrase / example say → tts prefetch, one per tick, starting 3 s after boot."""
@@ -459,7 +535,7 @@ class OrchestratorNode(Node):
         # 시연에서 실제로 나올 물건이므로 그만큼만 데운다. 나머지는 첫 호출 때 합성된다.
         keys = set(self.cfg.get('korean', {}))
         for key in self.cfg.get('phrases', {}):
-            if key in ('not_visible', 'step_failed', 'not_accepted'):
+            if key in ('not_visible', 'step_failed', 'not_accepted', 'not_holding', 'object_lost'):
                 for k in keys:
                     texts.add(planner.phrase(self.cfg, key, k))
             elif key != 'module_lost':
@@ -504,26 +580,25 @@ class OrchestratorNode(Node):
 
     # 회복 규칙: 성공하면 그대로 반영하고, 실패하면 "모른다"로 되돌린다. 다음 계획이 이동이나
     # 집기를 다시 넣어 스스로 회복한다. 놓기에 실패하면 물건은 아직 손에 있으므로 유지한다.
-    _PICKS = ('pick', 'take_out', 'receive')
-    _PUTS = ('place', 'put_in', 'handover')
+    _PICKS = hold.PICKS
+    _PUTS = hold.PUTS
 
     def _update_robot_state(self, which: str, m: SubtaskState) -> None:
         sent = self._sent.get(which)
         if not sent or sent[0] != m.plan_id or sent[1] != m.index:
             return                                   # 내가 보낸 그 subtask 의 결과가 아니다
         _, _, action, args = sent
-        before = (self.at, self.holding)
         done = m.status == SubtaskState.DONE
+        # DONE 은 3회 반복되므로 바뀔 때만 남긴다 (_set_holding 도 같은 값이면 아무것도 안 한다)
         if action == 'move_to':
-            self.at = args[0] if done else 'unknown'
+            at = args[0] if done else 'unknown'
+            if at != self.at:
+                self.at = at
+                self.events('state', 'ROBOT_STATE', at=self.at, holding=self.holding)
         elif action in self._PICKS:
-            self.holding = args[0] if done else 'none'
+            self._set_holding(args[0] if done else 'none', 'picked' if done else 'pick_failed')
         elif action in self._PUTS and done:
-            self.holding = 'none'
-        else:
-            return
-        if (self.at, self.holding) != before:      # DONE 은 3회 반복되므로 바뀔 때만 남긴다
-            self.events('state', 'ROBOT_STATE', at=self.at, holding=self.holding)
+            self._set_holding('none', 'put')
 
     # --- ports --------------------------------------------------------------
     def _say(self, text: str) -> None:
@@ -555,6 +630,8 @@ class OrchestratorNode(Node):
                 f'vla_prompts.yaml — sending template {step.instruction!r}; expect no DONE '
                 f'(step timeout instead)')
         self._sent[which] = (plan_id, step.index, step.action, list(step.args))
+        if step.action in self._PUTS and list(step.args[:1]) == [self.holding]:
+            self._end_hold('release')        # letting it go on purpose: not part of the hold stats
         self.cmd_pub[which].publish(
             SubtaskCmd(plan_id=plan_id, index=step.index, action=step.action,
                        args=list(step.args), instruction=step.instruction, cancel=False))

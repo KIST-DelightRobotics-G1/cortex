@@ -108,6 +108,14 @@ orchestrator_node:
     # Unfilled → template sentence + warning. '' = templates only.
     # vla_prompts_path: default = installed share/cortex_cognition/config/vla_prompts.yaml
     ack_phrase: '네.'                   # said when a request goes to the LLM (idle only); '' = off
+    # Holding (docs/gripper_presence.md): from a pick's DONE until the object is put down, the
+    # gripper camera should see it (detector publishes gripper_presence_topic).
+    #   log      record only: HOLD_START / HOLD_STATS (recognition share) / HOLD_LOST, plan goes on
+    #   enforce  a step does not start without it; losing it mid-step cancels the step and the plan
+    held_monitor_mode: log
+    gripper_presence_topic: /cortex/gripper_presence
+    held_heartbeat_timeout_s: 1.0       # no GripperPresence for this long -> UNKNOWN
+    held_unknown: warn                  # enforce, UNKNOWN (camera/detector down): warn = go on, fail = stop
 
 llm_node:
   ros__parameters:

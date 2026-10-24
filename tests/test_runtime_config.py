@@ -78,7 +78,7 @@ def test_node_logging_reads_level_and_events(tmp_path):
 def test_shipped_logging_yaml_defaults():
     from cortex_bringup.runtime_config import node_logging
     shipped = Path(__file__).resolve().parents[1]/'src/cortex_bringup/config/logging.yaml'
-    assert node_logging(str(shipped), 'orchestrator_node') == ('info', 'session,plan,precheck,subtask', 'all')
+    assert node_logging(str(shipped), 'orchestrator_node') == ('info', 'session,plan,precheck,subtask,hold', 'all')
     assert node_logging(str(shipped), 'detector_node') == ('info', 'config,check', 'all')
     assert node_logging(str(shipped), 'stt_node') == ('info', 'transcript', 'all')
     assert node_logging(str(shipped), 'llm_node') == ('info', '', 'all')
