@@ -51,7 +51,9 @@ class GripperView:
 
 class HoldStats:
     """Seconds spent in each state for one holding window, sampled by the caller.
-    A sample closes the time since the previous one under the previous state."""
+    A sample closes the time since the previous one under the previous state.
+    absent_max_s (the longest single ABSENT) is what to compare with the detector's
+    ABSENT window when a dropout turns out to be a false alarm."""
 
     def __init__(self, key: str, now: float) -> None:
         self.key = key
@@ -59,22 +61,39 @@ class HoldStats:
         self.last = None
         self.seconds = {PRESENT: 0.0, ABSENT: 0.0, UNKNOWN: 0.0}
         self.changes = 0
+        self.absent_runs = 0                          # times it went ABSENT
+        self.absent_max_s = 0.0
+        self._absent_since = None
+        self.unknown_why: list = []                   # UNKNOWN details, first seen first
 
-    def sample(self, now: float, state: str) -> bool:
-        """Record state at now. True for the first sample and whenever the state changes."""
+    def _close(self, now: float) -> None:
         if self.last in self.seconds:
             self.seconds[self.last] += max(0.0, now - self.t_last)
+        if self._absent_since is not None:
+            self.absent_max_s = max(self.absent_max_s, now - self._absent_since)
+        self.t_last = now
+
+    def sample(self, now: float, state: str, detail: str = '') -> bool:
+        """Record state at now. True for the first sample and whenever the state changes."""
+        self._close(now)
         first = self.last is None
         changed = not first and state != self.last
         self.changes += changed
-        self.last, self.t_last = state, now
+        if state != ABSENT:
+            self._absent_since = None
+        elif self._absent_since is None:
+            self.absent_runs += 1
+            self._absent_since = now
+        if state == UNKNOWN and detail and detail not in self.unknown_why:
+            self.unknown_why.append(detail)
+        self.last = state
         return first or changed
 
     def summary(self, now: float) -> dict:
-        if self.last is not None:
-            self.sample(now, self.last)
+        self._close(now)
         total = sum(self.seconds.values())
         share = {s.lower(): round(v / total, 3) if total > 0 else 0.0
                  for s, v in self.seconds.items()}
-        return dict(object=self.key, duration_s=round(now - self.t0, 2), changes=self.changes,
-                    **share)
+        return dict(object=self.key, duration_s=round(now - self.t0, 2), **share,
+                    changes=self.changes, absent_runs=self.absent_runs,
+                    absent_max_s=round(self.absent_max_s, 2), unknown_why=list(self.unknown_why))

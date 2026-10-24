@@ -15,9 +15,10 @@
 #                      subtask   SUBTASK_SENT, WAIT_IDLE, STUB_DISPATCH
 #                      state     ROBOT_STATE
 #                      config    VLA_PROMPT, TTS_WARMUP
-#                      hold      HOLD_MONITOR (config / start / stop), HOLD_STATE (gripper state of
-#                                the held object, on change), HOLD_STATS (share of each state per
-#                                holding window), HOLD_UNKNOWN, HOLD_LOST
+#                      hold      HOLD_CONFIG (once), HOLD_START / HOLD_STATS (each holding window:
+#                                recognition share, ABSENT runs), HOLD_UNKNOWN (once per reason),
+#                                HOLD_LOST (once per step)
+#                      hold_trace HOLD_STATE (every gripper state change; recorded, off on console)
 #   detector_node      config    YOLO_CONFIG (once at start)
 #                      check     YOLO_CHECK (each answer + camera fps · infer Hz/ms · drops at that
 #                                moment; the same answer repeated within 2 s is not printed)

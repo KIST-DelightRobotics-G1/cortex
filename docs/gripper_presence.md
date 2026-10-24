@@ -28,29 +28,41 @@
 
 ## Orchestrator 동작
 
-설정은 `cortex_params.yaml`의 `orchestrator_node`. 기본은 꺼짐(`held_monitor_enabled: false`).
+설정은 `cortex_params.yaml`의 `orchestrator_node`. 항상 켜져 있고 모드만 고른다.
+
+| `held_monitor_mode` | 하는 일 |
+|---|---|
+| `log` (기본) | 판정과 기록만. 계획은 그대로 진행한다. 현장 인식률 확인용 |
+| `enforce` | 아래처럼 단계를 막거나 멈춘다 |
 
 - **감시 구간:** 집기(`pick` · `take_out` · `receive`)가 DONE이 된 뒤부터 같은 물체를 놓는 단계(`place` · `put_in` ·
   `handover`)가 시작될 때까지. 대상은 집기 동작의 첫 인자.
-- **시작 전 확인:** 감시 중이면 기존 `CheckTarget` 확인에 더해 그리퍼 PRESENT가 있어야 단계를 보낸다.
-  재시도 간격과 제한 시간은 기존 값을 같이 쓴다. 못 채우면 "오이를 들고 있지 않아 작업을 중단합니다."
-- **진행 중:** ABSENT를 받으면 진행 중인 모듈에 cancel → 단계 실패(`object_lost`) → 계획 중단 →
+- **시작 전 확인 (enforce):** 감시 중이면 기존 `CheckTarget` 확인에 더해 그리퍼 PRESENT가 있어야 단계를 보낸다.
+  재시도 간격과 제한 시간은 기존 값을 같이 쓴다. 못 채우면 "오이를 들고 있지 않아 작업을 중단합니다." → `holding = none`.
+- **진행 중 (enforce):** ABSENT를 받으면 진행 중인 모듈에 cancel → 단계 실패(`object_lost`) → 계획 중단 →
   "오이를 놓쳤습니다. 작업을 중단합니다." → `holding = none`.
 - **UNKNOWN:** 메시지가 `held_heartbeat_timeout_s`(1.0초) 넘게 없거나 `camera_ok=false`.
-  `held_unknown: warn`이면 기록만 하고 진행, `fail`이면 시작하지 않거나 단계를 멈춘다.
-- **감시하지 않는 경우:** 꺼져 있을 때, 빈손일 때, 집기·놓기 단계 자체, 목록에 없는 물체.
+  enforce에서 `held_unknown: warn`이면 진행, `fail`이면 시작하지 않거나 단계를 멈춘다. 멈춰도 `holding`은 유지한다
+  (안 보이는 것과 없는 것은 다르다).
+- **감시하지 않는 경우:** 빈손일 때, 집기·놓기 단계 자체, 목록에 없는 물체.
 
-## 로그 (`logging.yaml` → `hold`, 세션 jsonl에도 기록)
+## 로그
 
-| 이벤트 | 내용 |
-|---|---|
-| `HOLD_MONITOR` | `stage`: config(시작 시 설정) / start / stop |
-| `HOLD_STATE` | 들고 있는 동안 그리퍼 상태가 바뀔 때마다. 계획 없이 들고 있을 때도 남는다 |
-| `HOLD_STATS` | 구간이 끝날 때 PRESENT / ABSENT / UNKNOWN 시간 비율과 바뀐 횟수. 실제로 쥐었을 때의 손목 인식률 |
-| `HOLD_UNKNOWN` | 단계 진행 중 UNKNOWN (단계마다 한 번) |
-| `HOLD_LOST` | 놓침으로 단계를 멈출 때 |
+화면(`hold`)에는 필요한 때만 한 줄씩 남는다. 프레임마다, 상태가 바뀔 때마다 찍지 않는다.
 
-`HOLD_STATS`의 구간은 놓기 단계를 보내는 순간 끝난다. 일부러 놓는 동안의 ABSENT는 인식률에 넣지 않는다.
+| 이벤트 | 언제 | 내용 |
+|---|---|---|
+| `HOLD_CONFIG` | 노드 시작 시 한 번 | 모드, 토픽, 타임아웃 |
+| `HOLD_START` | 집기 완료 (감시 구간 시작) | 대상, 그 순간 그리퍼 상태 |
+| `HOLD_UNKNOWN` | 구간마다 이유별 한 번 | `no_message` · `stale` · `camera_not_ok` |
+| `HOLD_LOST` | 단계마다 한 번 | ABSENT 판정. `stage`(precheck / running), `stopped`(enforce면 true) |
+| `HOLD_STATS` | 구간 끝 (놓기 시작 · 놓침 · 다른 물체 집기) | PRESENT / ABSENT / UNKNOWN 시간 비율, `absent_runs`(ABSENT 횟수), `absent_max_s`(가장 긴 ABSENT), `unknown_why` |
+
+`HOLD_STATS`가 실제로 쥐었을 때의 손목 인식률이다. 놓기 단계를 보내는 순간 구간이 끝나므로 일부러 놓는 동안의
+ABSENT는 들어가지 않는다. 놓기가 실패하면 계획이 끝난 뒤 구간을 다시 연다(`HOLD_START reason=resumed`).
+
+상태가 바뀔 때마다의 기록(`HOLD_STATE`)은 `hold_trace` 토픽이다. 화면에는 꺼져 있고 세션 jsonl에만 남는다
+(`logging.yaml`의 `record: all`). detector가 깜빡이는지 볼 때는 `events`에 `hold_trace`를 더한다.
 
 ## Detector 없이 시험하기
 

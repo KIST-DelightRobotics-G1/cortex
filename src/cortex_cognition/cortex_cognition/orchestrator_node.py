@@ -298,7 +298,7 @@ class OrchestratorNode(Node):
         self.declare_parameter('tts_warmup_topic', '/cortex/tts/warmup')
         self.declare_parameter('ack_phrase', '네.')      # spoken the moment a request goes to the LLM; '' = off
         # holding: the picked object must stay in the gripper until it is put down (hold.py)
-        self.declare_parameter('held_monitor_enabled', False)
+        self.declare_parameter('held_monitor_mode', 'log')   # log | enforce
         self.declare_parameter('gripper_presence_topic', '/cortex/gripper_presence')
         self.declare_parameter('held_heartbeat_timeout_s', 1.0)
         self.declare_parameter('held_unknown', 'warn')   # warn | fail
@@ -309,9 +309,9 @@ class OrchestratorNode(Node):
         #   plan: PLAN_STEP PLAN_END PLAN_CANCEL PLAN_IGNORED REWRITE SCENARIO
         #   precheck: PRECHECK_CONFIG PRECHECK_RESULT PRECHECK_STATE
         #   subtask: SUBTASK_SENT WAIT_IDLE STUB_DISPATCH · state: ROBOT_STATE · config: VLA_PROMPT TTS_WARMUP
-        #   hold: HOLD_MONITOR HOLD_STATE HOLD_STATS HOLD_UNKNOWN HOLD_LOST
+        #   hold: HOLD_CONFIG HOLD_START HOLD_UNKNOWN HOLD_LOST HOLD_STATS · hold_trace: HOLD_STATE
         self.events = EventLog(self, known=('session', 'plan', 'precheck', 'subtask', 'state', 'config',
-                                            'hold'))
+                                            'hold', 'hold_trace'))
         self._last_precheck = {}         # target -> last PRECHECK_RESULT printed (repeat suppression)
         scenario_dir = g('scenario_dir').value
         tick_hz = float(g('tick_rate_hz').value)
@@ -405,12 +405,10 @@ class OrchestratorNode(Node):
                                              callback_group=self._det_grp)
         self._det_timeout = float(g('detector_call_timeout_s').value)
         # What the gripper camera sees (detector) vs. what we should hold (self.holding).
-        self.held_monitor = bool(g('held_monitor_enabled').value)
         self.gripper = hold.GripperView(float(g('held_heartbeat_timeout_s').value))
         self._hold_stats = None          # hold.HoldStats while an object should be in the hand
-        if self.held_monitor:
-            self.create_subscription(GripperPresence, g('gripper_presence_topic').value,
-                                     self._on_gripper, 10, callback_group=grp)
+        self.create_subscription(GripperPresence, g('gripper_presence_topic').value,
+                                 self._on_gripper, 10, callback_group=grp)
 
         prm = ex.Params(
             accept_timeout_s=float(g('accept_timeout_s').value),
@@ -426,7 +424,7 @@ class OrchestratorNode(Node):
             say_on_done=bool(g('say_on_done').value),
             precheck_timeout_s=float(g('precheck_timeout_s').value),
             precheck_retry_s=float(g('precheck_retry_s').value),
-            held_monitor=self.held_monitor,
+            held_mode=str(g('held_monitor_mode').value),
             held_unknown=str(g('held_unknown').value),
         )
         ports = ex.Ports(
@@ -451,7 +449,7 @@ class OrchestratorNode(Node):
                     precheck_timeout_s=prm.precheck_timeout_s,
                     precheck_retry_s=prm.precheck_retry_s,
                     detector_fail_open=prm.detector_fail_open)
-        self.events('hold', 'HOLD_MONITOR', stage='config', enabled=self.held_monitor,
+        self.events('hold', 'HOLD_CONFIG', mode=prm.held_mode,
                     gripper_topic=g('gripper_presence_topic').value,
                     heartbeat_timeout_s=self.gripper.timeout_s, unknown=prm.held_unknown)
         # 100 ms absence monitor (accept / stale / step timeouts); everything else is event-driven.
@@ -472,15 +470,25 @@ class OrchestratorNode(Node):
                              for o in m.objects})
         self._sample_hold()
 
+    # Console (hold): a holding window prints HOLD_START and HOLD_STATS, plus HOLD_UNKNOWN once
+    # per reason and HOLD_LOST once per step — never per frame. Every state change is HOLD_STATE
+    # under hold_trace: recorded in the session jsonl, off on the console.
     def _sample_hold(self) -> None:
-        """Feed HoldStats; log each state change of the held object, plan or no plan."""
+        """Feed HoldStats, plan or no plan."""
         stats = self._hold_stats
         if stats is None:
+            if self.holding != 'none' and self._exec.phase == 'IDLE':
+                self._start_hold('resumed')          # the put did not happen: still in the hand
             return
-        state, detail = self.gripper.state(stats.key, self._now())
-        if stats.sample(self._now(), state):
-            self.events('hold', 'HOLD_STATE', object=stats.key, state=state, detail=detail,
+        now = self._now()
+        state, detail = self.gripper.state(stats.key, now)
+        new_why = state == hold.UNKNOWN and detail not in stats.unknown_why
+        if stats.sample(now, state, detail):
+            self.events('hold_trace', 'HOLD_STATE', object=stats.key, state=state, detail=detail,
                         plan_id=self._exec.plan_id, phase=self._exec.phase)
+        if new_why:
+            self.events('hold', 'HOLD_UNKNOWN', object=stats.key, detail=detail,
+                        plan_id=self._exec.plan_id)
 
     def _set_holding(self, new: str, why: str) -> None:
         """holding changes here only. A holding window (and its HoldStats) runs from a pick's
@@ -490,17 +498,21 @@ class OrchestratorNode(Node):
         self._end_hold(why)
         self.holding = new
         self.events('state', 'ROBOT_STATE', at=self.at, holding=self.holding)
-        if self.held_monitor and new != 'none':
-            self._hold_stats = hold.HoldStats(new, self._now())
-            self.events('hold', 'HOLD_MONITOR', stage='start', object=new)
-            self._sample_hold()
+        if new != 'none':
+            self._start_hold(why)
+
+    def _start_hold(self, why: str) -> None:
+        now = self._now()
+        stats = self._hold_stats = hold.HoldStats(self.holding, now)
+        state, detail = self.gripper.state(stats.key, now)
+        stats.sample(now, state, detail)
+        self.events('hold', 'HOLD_START', object=stats.key, reason=why, state=state, detail=detail,
+                    plan_id=self._exec.plan_id)
 
     def _end_hold(self, why: str) -> None:
         stats, self._hold_stats = self._hold_stats, None
-        if stats is None:
-            return
-        self.events('hold', 'HOLD_STATS', reason=why, **stats.summary(self._now()))
-        self.events('hold', 'HOLD_MONITOR', stage='stop', object=stats.key, reason=why)
+        if stats is not None:
+            self.events('hold', 'HOLD_STATS', reason=why, **stats.summary(self._now()))
 
     def _warm_tts_cache(self) -> None:
         """Every fixed phrase / example say → tts prefetch, one per tick, starting 3 s after boot."""
