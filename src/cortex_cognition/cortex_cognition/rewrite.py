@@ -21,7 +21,8 @@ auto_open (a plan fix, not a demo patch): taking something out of a place with
 a door — take_out(x, <place>), or pick right after move_to(<place>) — gets an
 open(<door>) in front of it unless the line before already opens that door. The
 LLM drops that open about one time in ten. The rules are then matched against
-(open, take) as if the LLM had written the open, so demo inserts still apply.
+(prev, open) and (open, take) as if the LLM had written the open, so demo
+inserts on either side of it still apply.
 """
 
 from __future__ import annotations
@@ -78,11 +79,17 @@ class Rewriter:
         out = []
         door = self._missing_door(prev_action, prev_args or [], nxt_action, nxt_args)
         if door:
+            # the rules see the open we add as if the LLM had written it: (prev, open) first
+            out += self._rule_inserts(prev_action, prev_args, 'open', [door])
             out.append(self._insert('auto_open', {'a': 'open', 'args': [door],
                                                   'say': self.open_say}))
-            prev_action, prev_args = 'open', [door]     # the rules see the open we just added
+            prev_action, prev_args = 'open', [door]
+        return out + self._rule_inserts(prev_action, prev_args, nxt_action, nxt_args)
+
+    def _rule_inserts(self, prev_action, prev_args, nxt_action: str, nxt_args: list) -> list:
         if prev_action is None:
-            return out
+            return []
+        out = []
         for r in self.rules:
             a, b = r['between']
             if _matches(a, prev_action, prev_args) and _matches(b, nxt_action, nxt_args):

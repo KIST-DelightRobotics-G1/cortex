@@ -33,6 +33,13 @@ verbs:                        # 여기서만 쓰는 동사
     instruction: "Step back from the {0}."
 
 rules:
+  - name: fridge_door_reach   # 이동이 멈춘 자리에서는 팔이 냉장고 문에 닿지 않는다
+    between:
+      - {a: move_to, args: [fridge]}
+      - {a: open, args: [fridge_door]}
+    insert:
+      - {a: approach, args: [fridge]}
+
   - name: fridge_reach        # 문을 연 자리에서는 팔이 오이에 닿지 않는다
     between:
       - {a: open, args: [fridge_door]}
